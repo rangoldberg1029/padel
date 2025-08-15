@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Padel Buddy – אפליקציה לקבוצת פאדל</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#0f172a"/>
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React + ReactDOM + Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Firebase compat (easy usage without modules) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <script>
+    // Register service worker for PWA
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./service-worker.js");
+      });
+    }
+  </script>
+
+  <script type="text/babel">
+    const {useState, useEffect, useMemo} = React;
+
+    // --- Firebase init ---
+    // TODO: הדבק כאן את פרטי ה-Web App שלך מפיירבייס (Project settings → General → Your apps → SDK setup and config)
+    const firebaseConfig = {
+  apiKey: "AIzaSyC57SCpJgj8OuYilKfGslweGX1eePRKzZE",
+  authDomain: "padel-e5ab0.firebaseapp.com",
+  projectId: "padel-e5ab0",
+  storageBucket: "padel-e5ab0.firebasestorage.app",
+  messagingSenderId: "1028798475012",
+  appId: "1:1028798475012:web:9d1ce68bf1e3018de9be51",
+  measurementId: "G-EC2YCTZ36S"
+};
+
+    const fbApp = firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    // helpers
+    function shuffle(arr){
+      const a = [...arr];
+      for (let i=a.length-1; i>0; i--) {
+        const j = Math.floor(Math.random()*(i+1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+    function weekNumber(date){
+      const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+      const dayNum = d.getUTCDay() || 7;
+      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+      return Math.ceil(((d - yearStart)/86400000 + 1)/7);
+    }
+    function pairKey(a,b){
+      if(!a||!b) return "";
+      return [a,b].sort((x,y)=>x.localeCompare(y,'he')).join(" & ");
+    }
+    function todayStr(){
+      const d = new Date();
+      return d.toISOString().slice(0,10);
+    }
+
+    // Collections: players, sessions, matches
+    async function getPlayers(){ const snap = await db.collection("players").orderBy("idx").get(); return snap.docs.map(d=>({id:d.id, ...d.data()})); }
+    async function setPlayers(list){
+      // overwrite all (simple approach for small group)
+      const batch = db.batch();
+      const coll = db.collection("players");
+      const existing = await coll.get();
+      existing.forEach(doc=> batch.delete(doc.ref));
+      list.forEach((name, idx)=>{
+        const ref = coll.doc();
+        batch.set(ref, { name, idx });
+      });
+      await batch.commit();
+    }
+
+    function App(){
+      const [tab, setTab] = useState('draw');
+      const [players, setPlayersState] = useState(["שחקן 1","שחקן 2","שחקן 3","שחקן 4","שחקן 5"]);
+      const [playersLoaded, setPlayersLoaded] = useState(false);
+
+      // realtime players
+      useEffect(()=>{
+        const unsub = db.collection("players").orderBy("idx").onSnapshot(snap=>{
+          if(!snap.empty){
+            const arr = snap.docs.map(d=> d.data().name);
+            setPlayersState(arr);
+            setPlayersLoaded(true);
+          } else {
+            // first time: seed defaults
+            setPlayers(["שחקן 1","שחקן 2","שחקן 3","שחקן 4","שחקן 5"]).then(()=> setPlayersLoaded(true));
+          }
+        });
+        return ()=>unsub();
+      }, []);
+
+      const updatePlayer = (idx, name)=>{
+        const arr = [...players];
+        arr[idx] = name;
+        setPlayersState(arr);
+      };
+      const savePlayers = async()=>{
+        await setPlayers(players);
+        alert("נשמר");
+      };
+
+      // attendance & draw (local UI)
+      const [attendance, setAttendance] = useState(()=> Object.fromEntries(players.map(p=>[p,true])));
+      useEffect(()=>{
+        const next = {};
+        players.forEach(p=>{ next[p] = attendance[p] ?? true; });
+        setAttendance(next);
+      }, [players.join("|")]);
+
+      const todaysPlayers = useMemo(()=> players.filter(p=>attendance[p]), [players, attendance]);
+      const [draw, setDraw] = useState({});
+      const runDraw = ()=>{
+        const present = todaysPlayers.filter(Boolean);
+        if(present.length < 4){ alert("צריך לפחות 4 שחקנים"); return; }
+        const s = shuffle(present);
+        if(s.length === 4){
+          setDraw({ A1:s[0], A2:s[1], B1:s[2], B2:s[3] });
+        } else if(s.length === 5){
+          setDraw({ A1:s[0], A2:s[1], B1:s[2], B2:s[3], bench:s[4] });
+        } else {
+          setDraw({ A1:s[0], A2:s[1], B1:s[2], B2:s[3], bench:s[4] });
+        }
+      };
+
+      // sessions
+      const [currentSessionId, setCurrentSessionId] = useState("");
+      const [sessions, setSessions] = useState([]);
+
+      useEffect(()=>{
+        const unsub = db.collection("sessions").orderBy("date","desc").onSnapshot(snap=>{
+          const arr = snap.docs.map(d=> ({id:d.id, ...d.data()}));
+          setSessions(arr);
+          if(!currentSessionId && arr.length) setCurrentSessionId(arr[0].id);
+        });
+        return ()=>unsub();
+      }, []);
+
+      const startSession = async ()=>{
+        const d = todayStr();
+        const ref = await db.collection("sessions").add({ date: d, label: `מפגש ${d}` });
+        setCurrentSessionId(ref.id);
+      };
+
+      // record match
+      const [round, setRound] = useState(1);
+      const [format, setFormat] = useState('15');
+      const [A1, setA1] = useState(''); const [A2, setA2] = useState('');
+      const [B1, setB1] = useState(''); const [B2, setB2] = useState('');
+      const [scoreA, setScoreA] = useState(0); const [scoreB, setScoreB] = useState(0);
+
+      useEffect(()=>{
+        if(draw.A1) setA1(draw.A1);
+        if(draw.A2) setA2(draw.A2);
+        if(draw.B1) setB1(draw.B1);
+        if(draw.B2) setB2(draw.B2);
+      }, [draw.A1, draw.A2, draw.B1, draw.B2]);
+
+      const addMatch = async ()=>{
+        if(!currentSessionId){ alert("פתחו Session במפגש היום"); return; }
+        if(!A1||!A2||!B1||!B2){ alert("בחרו את כל ארבעת השחקנים"); return; }
+        if(scoreA===scoreB){ alert("צריך מנצח ברור"); return; }
+        const winner = scoreA>scoreB? 'A':'B';
+        const date = todayStr();
+        await db.collection("matches").add({
+          date, week: weekNumber(new Date(date)),
+          sessionId: currentSessionId,
+          round, format, A1, A2, B1, B2, scoreA, scoreB, winner
+        });
+        setRound(r=>r+1); setScoreA(0); setScoreB(0);
+      };
+
+      // matches realtime
+      const [matches, setMatches] = useState([]);
+      useEffect(()=>{
+        const unsub = db.collection("matches").orderBy("date").orderBy("round").onSnapshot(snap=>{
+          const arr = snap.docs.map(d=> ({id:d.id, ...d.data()}));
+          setMatches(arr);
+        });
+        return ()=>unsub();
+      }, []);
+
+      // stats
+      const pairStats = useMemo(()=>{
+        const map = new Map();
+        matches.forEach(m=>{
+          const pkA = pairKey(m.A1, m.A2);
+          const pkB = pairKey(m.B1, m.B2);
+          if(!map.has(pkA)) map.set(pkA, { pair:pkA, games:0,wins:0,losses:0,winPct:0,ptsFor:0,ptsAgainst:0,diff:0,sabs:0,hotStreak:0 });
+          if(!map.has(pkB)) map.set(pkB, { pair:pkB, games:0,wins:0,losses:0,winPct:0,ptsFor:0,ptsAgainst:0,diff:0,sabs:0,hotStreak:0 });
+          const a = map.get(pkA), b = map.get(pkB);
+          a.games++; b.games++;
+          a.ptsFor += m.scoreA; a.ptsAgainst += m.scoreB;
+          b.ptsFor += m.scoreB; b.ptsAgainst += m.scoreA;
+          if(m.winner==='A'){ a.wins++; b.losses++; } else { b.wins++; a.losses++; }
+        });
+        // sabs per session
+        const bySession = new Map();
+        matches.forEach(m=>{ if(!bySession.has(m.sessionId)) bySession.set(m.sessionId, []); bySession.get(m.sessionId).push(m); });
+        bySession.forEach(arr=>{
+          arr.sort((x,y)=> x.round - y.round || x.date.localeCompare(y.date));
+          let currentWinnerPair = ""; let streakCount = 0;
+          arr.forEach(m=>{
+            const winnerPair = m.winner==='A'? pairKey(m.A1,m.A2):pairKey(m.B1,m.B2);
+            if(winnerPair===currentWinnerPair) streakCount += 1; else { currentWinnerPair = winnerPair; streakCount = 1; }
+            if(streakCount===3){
+              const ps = map.get(winnerPair); if(ps) ps.sabs += 1;
+              streakCount = 0; currentWinnerPair = "";
+            }
+          });
+        });
+        // hot streak
+        const all = [...matches].sort((x,y)=> x.date.localeCompare(y.date) || x.sessionId.localeCompare(y.sessionId) || x.round - y.round);
+        const streaks = new Map();
+        all.forEach(m=>{
+          const winnerPair = m.winner==='A'? pairKey(m.A1,m.A2):pairKey(m.B1,m.B2);
+          const loserPair = m.winner==='A'? pairKey(m.B1,m.B2):pairKey(m.A1,m.A2);
+          streaks.set(winnerPair, (streaks.get(winnerPair)||0)+1);
+          streaks.set(loserPair, 0);
+        });
+        map.forEach((v,k)=>{ v.winPct = v.games? v.wins/v.games:0; v.diff = v.ptsFor - v.ptsAgainst; v.hotStreak = streaks.get(k)||0; });
+        return Array.from(map.values()).sort((a,b)=> b.winPct - a.winPct || b.wins - a.wins);
+      }, [matches]);
+
+      const currentWeek = weekNumber(new Date());
+      const weekTable = useMemo(()=>{
+        const map = new Map();
+        matches.filter(m=>m.week===currentWeek).forEach(m=>{
+          const pkA = pairKey(m.A1, m.A2);
+          const pkB = pairKey(m.B1, m.B2);
+          const winnerPk = m.winner==='A'? pkA: pkB;
+          if(!map.has(pkA)) map.set(pkA, {pair:pkA,wins:0,games:0,pct:0,diff:0});
+          if(!map.has(pkB)) map.set(pkB, {pair:pkB,wins:0,games:0,pct:0,diff:0});
+          map.get(pkA).games++; map.get(pkB).games++;
+          map.get(winnerPk).wins++;
+          map.get(pkA).diff += (m.scoreA - m.scoreB);
+          map.get(pkB).diff += (m.scoreB - m.scoreA);
+        });
+        map.forEach(v=>{ v.pct = v.games? v.wins/v.games:0; });
+        return Array.from(map.values()).sort((a,b)=> b.wins - a.wins || b.pct - a.pct || b.diff - a.diff);
+      }, [matches, currentWeek]);
+
+      // data export (admin backup)
+      const exportCsv = async()=>{
+        const rows = [["date","week","sessionId","round","format","A1","A2","B1","B2","scoreA","scoreB","winner"]];
+        matches.forEach(m=> rows.push([m.date,m.week,m.sessionId,m.round,m.format,m.A1,m.A2,m.B1,m.B2,m.scoreA,m.scoreB,m.winner]));
+        const csv = rows.map(r=> r.join(",")).join("\\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = `matches-${todayStr()}.csv`; a.click(); URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div dir="rtl" className="min-h-screen bg-slate-50 text-slate-900 p-4">
+          <div className="max-w-5xl mx-auto">
+            <header className="mb-4 flex items-center justify-between">
+              <h1 className="text-2xl font-bold">Padel Buddy · אפליקציה שיתופית</h1>
+              <nav className="flex gap-2">
+                {([
+                  {k:'draw',t:'הגרלה'},
+                  {k:'record',t:'הזנת משחק'},
+                  {k:'stats',t:'סטטיסטיקות'},
+                  {k:'week',t:'זוג השבוע'},
+                  {k:'admin',t:'שיתופי/גיבוי'},
+                ]).map(({k,t}) => (
+                  <button key={k} onClick={()=>setTab(k)} className={"px-3 py-1.5 rounded-xl border " + (tab===k?'bg-white shadow':'bg-slate-100 hover:bg-white')}>{t}</button>
+                ))}
+              </nav>
+            </header>
+
+            <section className="mb-6 bg-white rounded-2xl shadow p-4">
+              <h2 className="font-semibold mb-2">שחקנים</h2>
+              <div className="grid sm:grid-cols-5 grid-cols-2 gap-2">
+                {players.map((p,i)=>(
+                  <input key={i} value={p} onChange={e=>updatePlayer(i, e.target.value)} className="px-2 py-1 rounded-lg border" />
+                ))}
+              </div>
+              <div className="mt-3">
+                <button onClick={savePlayers} className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white">שמור שמות לשיתוף</button>
+                {!playersLoaded && <span className="text-xs text-slate-500 mr-2">טוען/שומר…</span>}
+              </div>
+            </section>
+
+            {tab==='draw' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-semibold">הגרלה</h2>
+                  <div className="flex items-center gap-2">
+                    <button onClick={startSession} className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white">פתח Session חדש</button>
+                    <select className="border rounded-lg px-2 py-1" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
+                      <option value="">— בחרו —</option>
+                      {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <p className="text-sm mb-2">סמנו מי הגיע היום:</p>
+                <div className="grid sm:grid-cols-5 grid-cols-2 gap-2 mb-4">
+                  {players.map(p=>(
+                    <label key={p} className="flex items-center gap-2 px-2 py-1.5 rounded-xl border">
+                      <input type="checkbox" checked={!!attendance[p]} onChange={()=> setAttendance(a=>({...a, [p]: !a[p]}))} />
+                      <span>{p}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <button onClick={runDraw} className="px-4 py-2 rounded-xl bg-indigo-600 text-white">הגרל זוגות</button>
+
+                {"A1" in (draw||{}) && (
+                  <div className="mt-4 grid sm:grid-cols-3 gap-4">
+                    <div className="rounded-xl border p-3">
+                      <div className="text-sm text-slate-600 mb-1">זוג A</div>
+                      <div className="text-lg font-semibold">{draw.A1} &nbsp;–&nbsp; {draw.A2}</div>
+                    </div>
+                    <div className="rounded-xl border p-3">
+                      <div className="text-sm text-slate-600 mb-1">זוג B</div>
+                      <div className="text-lg font-semibold">{draw.B1} &nbsp;–&nbsp; {draw.B2}</div>
+                    </div>
+                    {"bench" in draw && (
+                      <div className="rounded-xl border p-3 bg-amber-50">
+                        <div className="text-sm text-slate-600 mb-1">בחוץ</div>
+                        <div className="text-lg font-semibold">{draw.bench}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <p className="text-xs text-slate-500 mt-3">טיפ: כשאתם 5 – מחליפים כל משחק את השחקן שבחוץ לפי התור.</p>
+              </section>
+            )}
+
+            {tab==='record' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-3">הזנת משחק</h2>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border p-3">
+                    <label className="text-sm">סשן</label>
+                    <div className="flex items-center gap-2 mt-1">
+                      <select className="border rounded-lg px-2 py-1" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
+                        <option value="">— בחרו —</option>
+                        {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
+                      <button onClick={startSession} className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white">Session חדש</button>
+                    </div>
+                    <div className="mt-3">
+                      <label className="text-sm">רונד #</label>
+                      <input type="number" className="border rounded-lg px-2 py-1 ml-2" value={round} onChange={e=>setRound(parseInt(e.target.value||'1'))} />
+                    </div>
+                    <div className="mt-3">
+                      <label className="text-sm mr-2">פורמט</label>
+                      <select className="border rounded-lg px-2 py-1" value={format} onChange={e=>setFormat(e.target.value)}>
+                        <option value="15">עד 15 נקודות</option>
+                        <option value="SET">סט אחד (6 גיימים)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border p-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="text-sm text-slate-600">זוג A</div>
+                        <select className="border rounded-lg w-full px-2 py-1 mt-1" value={A1} onChange={e=>setA1(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <select className="border rounded-lg w-full px-2 py-1 mt-2" value={A2} onChange={e=>setA2(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <div className="mt-2">
+                          <label className="text-sm">נק׳/גיימים A</label>
+                          <input type="number" className="border rounded-lg w-24 px-2 py-1 ml-2" value={scoreA} onChange={e=>setScoreA(parseInt(e.target.value||'0'))} />
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-slate-600">זוג B</div>
+                        <select className="border rounded-lg w-full px-2 py-1 mt-1" value={B1} onChange={e=>setB1(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <select className="border rounded-lg w-full px-2 py-1 mt-2" value={B2} onChange={e=>setB2(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <div className="mt-2">
+                          <label className="text-sm">נק׳/גיימים B</label>
+                          <input type="number" className="border rounded-lg w-24 px-2 py-1 ml-2" value={scoreB} onChange={e=>setScoreB(parseInt(e.target.value||'0'))} />
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={addMatch} className="mt-3 px-4 py-2 rounded-xl bg-indigo-600 text-white">שמור משחק</button>
+                    <p className="text-xs text-slate-500 mt-2">המנצח נקבע לפי ניקוד גבוה יותר. ודאו שאין תיקו.</p>
+                  </div>
+                </div>
+
+                <div className="mt-6">
+                  <h3 className="font-semibold mb-2">משחקים אחרונים</h3>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-right p-2">תאריך</th>
+                          <th className="text-right p-2">Session</th>
+                          <th className="text-right p-2">רונד</th>
+                          <th className="text-right p-2">פורמט</th>
+                          <th className="text-right p-2">A</th>
+                          <th className="text-right p-2">B</th>
+                          <th className="text-right p-2">תוצאה</th>
+                          <th className="text-right p-2">מנצח</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...matches].slice(-10).reverse().map(m=>(
+                          <tr key={m.id} className="border-b">
+                            <td className="p-2 whitespace-nowrap">{m.date}</td>
+                            <td className="p-2">{(sessions.find(s=>s.id===m.sessionId)?.label) || m.sessionId}</td>
+                            <td className="p-2">{m.round}</td>
+                            <td className="p-2">{m.format==='15'? 'עד 15':'סט'}</td>
+                            <td className="p-2">{m.A1} & {m.A2}</td>
+                            <td className="p-2">{m.B1} & {m.B2}</td>
+                            <td className="p-2">{m.scoreA} : {m.scoreB}</td>
+                            <td className="p-2">{m.winner}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {tab==='stats' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-3">סטטיסטיקות לזוגות</h2>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-slate-50">
+                        <th className="text-right p-2">זוג</th>
+                        <th className="text-right p-2">משחקים</th>
+                        <th className="text-right p-2">נצחונות</th>
+                        <th className="text-right p-2">הפסדים</th>
+                        <th className="text-right p-2">% נצחון</th>
+                        <th className="text-right p-2">נק׳ בעד</th>
+                        <th className="text-right p-2">נק׳ נגד</th>
+                        <th className="text-right p-2">הפרש</th>
+                        <th className="text-right p-2">סבבים</th>
+                        <th className="text-right p-2">רצף נוכחי</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pairStats.map(ps=>(
+                        <tr key={ps.pair} className="border-b">
+                          <td className="p-2 whitespace-nowrap">{ps.pair}</td>
+                          <td className="p-2 text-center">{ps.games}</td>
+                          <td className="p-2 text-center">{ps.wins}</td>
+                          <td className="p-2 text-center">{ps.losses}</td>
+                          <td className="p-2 text-center">{(ps.winPct*100).toFixed(0)}%</td>
+                          <td className="p-2 text-center">{ps.ptsFor}</td>
+                          <td className="p-2 text-center">{ps.ptsAgainst}</td>
+                          <td className="p-2 text-center">{ps.diff}</td>
+                          <td className="p-2 text-center">{ps.sabs}</td>
+                          <td className="p-2 text-center">{ps.hotStreak}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
+            {tab==='week' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-semibold">זוג השבוע</h2>
+                  <div className="text-sm text-slate-600">שבוע {currentWeek}</div>
+                </div>
+                {weekTable.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-slate-50">
+                          <th className="text-right p-2">זוג</th>
+                          <th className="text-right p-2">נצחונות</th>
+                          <th className="text-right p-2">משחקים</th>
+                          <th className="text-right p-2">% נצחון</th>
+                          <th className="text-right p-2">הפרש נק׳</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {weekTable.map(r=>(
+                          <tr key={r.pair} className="border-b">
+                            <td className="p-2 whitespace-nowrap">{r.pair}</td>
+                            <td className="p-2 text-center">{r.wins}</td>
+                            <td className="p-2 text-center">{r.games}</td>
+                            <td className="p-2 text-center">{(r.pct*100).toFixed(0)}%</td>
+                            <td className="p-2 text-center">{r.diff}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : <p className="text-slate-600">אין עדיין משחקים השבוע.</p>}
+                <p className="text-xs text-slate-500 mt-3">נבחן לפי: נצחונות → אחוזים → הפרש נק׳.</p>
+              </section>
+            )}
+
+            {tab==='admin' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-2">שיתופי/גיבוי</h2>
+                <ol className="list-decimal pr-5 text-sm leading-7 text-slate-700">
+                  <li>הזן/י את שמות השחקנים ולחץ/י <b>שמור שמות לשיתוף</b>.</li>
+                  <li>פתח/י <b>Session חדש</b> בכל מפגש והזינו משחקים.</li>
+                  <li>כדי לשתף: פרסמו את הקבצים ב-Netlify/Vercel/GitHub Pages, ושלחו את הקישור לחברים. </li>
+                </ol>
+                <button onClick={exportCsv} className="mt-3 px-3 py-1.5 rounded-xl border">ייצוא CSV של משחקים</button>
+              </section>
+            )}
+
+            <footer className="py-6 text-center text-xs text-slate-500">Made with ♥ · נתונים משותפים עם Firestore · מתקין למסך הבית (PWA)</footer>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

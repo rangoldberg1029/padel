@@ -14,6 +14,12 @@
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <style>
+    /* טיפול בזליגת אינפוטים במספרים במובייל */
+    input[type="number"] { -moz-appearance: textfield; }
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  </style>
 </head>
 <body class="bg-gradient-to-b from-slate-50 to-slate-100">
   <div id="root"></div>
@@ -32,7 +38,7 @@
 
   <script type="text/babel">
     const {useState, useEffect, useMemo} = React;
-    const firebaseConfig = {"apiKey":"AIzaSyC57SCpJgj8OuYilKfGslweGX1eePRKzZE","authDomain":"padel-e5ab0.firebaseapp.com","projectId":"padel-e5ab0","storageBucket":"padel-e5ab0.appspot.com","messagingSenderId":"1028798475012","appId":"1:1028798475012:web:9d1ce68bf1e3018de9be51","measurementId":"G-EC2YCTZ36S"};
+    const firebaseConfig = {"apiKey": "AIzaSyC57SCpJgj8OuYilKfGslweGX1eePRKzZE", "authDomain": "padel-e5ab0.firebaseapp.com", "projectId": "padel-e5ab0", "storageBucket": "padel-e5ab0.appspot.com", "messagingSenderId": "1028798475012", "appId": "1:1028798475012:web:9d1ce68bf1e3018de9be51", "measurementId": "G-EC2YCTZ36S"};
     const fbApp = firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
     const auth = firebase.auth();
@@ -139,6 +145,44 @@
         if(currentSessionId===s.id) setCurrentSessionId("");
       };
 
+      // --- Admin: Reset all sessions (delete & rebuild by match dates) ---
+      const resetSessionsFromMatches = async ()=>{
+        if(!confirm("לאפס את כל הסשנים? זה ימחק את כל מסמכי הסשנים ויבנה אותם מחדש לפי תאריכי המשחקים, ויעדכן לכל משחק את ה-sessionId המתאים.")) return;
+        // 1) get all matches (for dates)
+        const matchesSnap = await db.collection("matches").get();
+        // 2) delete all sessions
+        const sessSnap = await db.collection("sessions").get();
+        const b1 = db.batch();
+        sessSnap.forEach(doc=> b1.delete(doc.ref));
+        await b1.commit();
+        // 3) create sessions per distinct date
+        const map = new Map(); // date -> new sessionId
+        for(const doc of matchesSnap.docs){
+          const data = doc.data(); const date = data.date || todayStr();
+          if(!map.has(date)){
+            const ref = await db.collection("sessions").add({date, label:`מפגש ${date}`});
+            map.set(date, ref.id);
+          }
+        }
+        // 4) update all matches to new sessionId
+        const b2 = db.batch();
+        matchesSnap.forEach(doc=>{ const data = doc.data(); const sid = map.get(data.date || todayStr()); b2.update(doc.ref, {sessionId: sid}); });
+        await b2.commit();
+        toast("סשנים אופסו ונבנו מחדש לפי תאריך ✔");
+      };
+
+      // Danger: delete all sessions + matches (full wipe)
+      const nukeAll = async ()=>{
+        if(!confirm("למחוק את כל הסשנים וכל המשחקים? הפעולה אינה הפיכה!")) return;
+        const m1 = await db.collection("matches").get();
+        const b = db.batch();
+        m1.forEach(d=> b.delete(d.ref));
+        const s1 = await db.collection("sessions").get();
+        s1.forEach(d=> b.delete(d.ref));
+        await b.commit();
+        toast("כל הנתונים נמחקו ✔");
+      };
+
       // record match
       const [round, setRound] = useState(1);
       const [format, setFormat] = useState('15');
@@ -226,7 +270,7 @@
         const bySession = new Map();
         matches.forEach(m=>{ if(!bySession.has(m.sessionId)) bySession.set(m.sessionId, []); bySession.get(m.sessionId).push(m); });
         bySession.forEach(arr=>{
-          arr.sort((x,y)=> (x.round||0) - (y.round||0) || (x.date||'').localeCompare(y.date||''));
+          arr.sort((x,y)=> (x.round||0) - (y.round||0) || (x.date||'').localeCompare(y.date||'') );
           let currentWinnerPair = ""; let streakCount = 0;
           arr.forEach(m=>{
             const winnerPair = m.winner==='A'? pairKey(m.A1,m.A2):pairKey(m.B1,m.B2);
@@ -270,7 +314,7 @@
         try {
           const rows = [["date","week","sessionId","round","format","A1","A2","B1","B2","scoreA","scoreB","winner"]];
           matches.forEach(m=> rows.push([m.date,m.week,m.sessionId,m.round,m.format,m.A1,m.A2,m.B1,m.B2,m.scoreA,m.scoreB,m.winner]));
-          const csv = rows.map(r=> r.join(",")).join("\n");
+          const csv = rows.map(r=> r.join(",")).join("\\n");
           const blob = new Blob([csv], {type:"text/csv"});
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a"); a.href = url; a.download = `matches-${todayStr()}.csv`; a.click(); URL.revokeObjectURL(url);
@@ -295,7 +339,7 @@
                 <img src="icon-192.png" className="w-8 h-8 rounded-xl" alt="" />
                 <div>
                   <h1 className="text-xl font-bold">Padel Buddy</h1>
-                  <div className="text-[11px] opacity-90">Project: {firebaseConfig.projectId} · v15</div>
+                  <div className="text-[11px] opacity-90">Project: {firebaseConfig.projectId} · v16</div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -306,7 +350,7 @@
               </div>
             </header>
 
-            {err && <div className="mb-4 p-3 rounded-2xl bg-rose-50 text-rose-700 border border-rose-200">
+            {err && <div className="mb-4 p-3 rounded-xl bg-rose-50 text-rose-700 border border-rose-200">
               ⚠️ שגיאת חיבור/הרשאות: {err}
             </div>}
 
@@ -326,9 +370,9 @@
               <h2 className="font-semibold mb-2">שחקנים</h2>
               <div className="grid sm:grid-cols-2 gap-3">
                 {players.map((p,i)=>(
-                  <div key={i} className="flex items-center gap-2">
-                    <label className="w-24 text-sm text-slate-600">שחקן {i+1}</label>
-                    <input value={p} onChange={e=>updatePlayer(i, e.target.value)} className="border rounded-lg px-2 py-1 flex-1" />
+                  <div key={i} className="flex items-center gap-2 min-w-0">
+                    <label className="w-24 text-sm text-slate-600 shrink-0">שחקן {i+1}</label>
+                    <input value={p} onChange={e=>updatePlayer(i, e.target.value)} className="border rounded-lg px-2 py-1 flex-1 min-w-0" />
                   </div>
                 ))}
               </div>
@@ -392,20 +436,20 @@
                 </div>
                 <div className="grid sm:grid-cols-2 gap-3">
                   <div className="rounded-xl border p-3">
-                    <div className="flex items-center gap-2">
-                      <label className="text-sm w-16">סשן</label>
-                      <select className="border rounded-lg px-2 py-1 flex-1" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <label className="text-sm w-16 shrink-0">סשן</label>
+                      <select className="border rounded-lg px-2 py-1 flex-1 min-w-[160px]" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
                         <option value="">— בחרו —</option>
                         {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
                       </select>
-                      <button onClick={async()=>{await ensureSession();}} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">חדש</button>
+                      <button onClick={async()=>{await ensureSession();}} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white shrink-0">חדש</button>
                     </div>
-                    <div className="flex items-center gap-2 mt-3">
-                      <label className="text-sm w-16">רונד #</label>
-                      <input type="number" className="border rounded-lg px-2 py-1 w-28" value={round} onChange={e=>setRound(parseInt(e.target.value||'1'))} />
+                    <div className="flex items-center gap-2 mt-3 flex-wrap">
+                      <label className="text-sm w-16 shrink-0">רונד #</label>
+                      <input type="number" className="border rounded-lg px-2 py-1 w-24 text-center sm:w-28" value={round} onChange={e=>setRound(parseInt(e.target.value||'1'))} />
                     </div>
-                    <div className="flex items-center gap-2 mt-3">
-                      <label className="text-sm w-16">פורמט</label>
+                    <div className="flex items-center gap-2 mt-3 flex-wrap">
+                      <label className="text-sm w-16 shrink-0">פורמט</label>
                       <select className="border rounded-lg px-2 py-1 w-40" value={format} onChange={e=>setFormat(e.target.value)}>
                         <option value="15">עד 15 נקודות</option>
                         <option value="SET">סט אחד (6 גיימים)</option>
@@ -415,38 +459,38 @@
 
                   <div className="rounded-xl border p-3">
                     <div className="grid grid-cols-2 gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <div className="text-sm text-slate-600 mb-1">זוג A</div>
-                        <select className="border rounded-lg px-2 py-1 w-full" value={A1} onChange={e=>setA1(e.target.value)}>
+                        <select className="border rounded-lg px-2 py-1 w-full min-w-0" value={A1} onChange={e=>setA1(e.target.value)}>
                           <option value="">—</option>
                           {players.map(p=><option key={p} value={p}>{p}</option>)}
                         </select>
-                        <select className="border rounded-lg px-2 py-1 w-full mt-2" value={A2} onChange={e=>setA2(e.target.value)}>
+                        <select className="border rounded-lg px-2 py-1 w-full mt-2 min-w-0" value={A2} onChange={e=>setA2(e.target.value)}>
                           <option value="">—</option>
                           {players.map(p=><option key={p} value={p}>{p}</option>)}
                         </select>
-                        <div className="mt-2 flex items-center gap-2">
-                          <label className="text-sm w-24">נק׳/גיימים A</label>
-                          <input type="number" className="border rounded-lg px-2 py-1 w-28" value={scoreA} onChange={e=>setScoreA(e.target.value)} />
+                        <div className="mt-2 flex items-center gap-2 justify-between flex-wrap">
+                          <label className="text-sm shrink-0">נק׳/גיימים A</label>
+                          <input type="number" className="border rounded-lg px-2 py-1 w-24 text-center sm:w-28" value={scoreA} onChange={e=>setScoreA(e.target.value)} />
                         </div>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <div className="text-sm text-slate-600 mb-1">זוג B</div>
-                        <select className="border rounded-lg px-2 py-1 w-full" value={B1} onChange={e=>setB1(e.target.value)}>
+                        <select className="border rounded-lg px-2 py-1 w-full min-w-0" value={B1} onChange={e=>setB1(e.target.value)}>
                           <option value="">—</option>
                           {players.map(p=><option key={p} value={p}>{p}</option>)}
                         </select>
-                        <select className="border rounded-lg px-2 py-1 w-full mt-2" value={B2} onChange={e=>setB2(e.target.value)}>
+                        <select className="border rounded-lg px-2 py-1 w-full mt-2 min-w-0" value={B2} onChange={e=>setB2(e.target.value)}>
                           <option value="">—</option>
                           {players.map(p=><option key={p} value={p}>{p}</option>)}
                         </select>
-                        <div className="mt-2 flex items-center gap-2">
-                          <label className="text-sm w-24">נק׳/גיימים B</label>
-                          <input type="number" className="border rounded-lg px-2 py-1 w-28" value={scoreB} onChange={e=>setScoreB(e.target.value)} />
+                        <div className="mt-2 flex items-center gap-2 justify-between flex-wrap">
+                          <label className="text-sm shrink-0">נק׳/גיימים B</label>
+                          <input type="number" className="border rounded-lg px-2 py-1 w-24 text-center sm:w-28" value={scoreB} onChange={e=>setScoreB(e.target.value)} />
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 mt-3">
+                    <div className="flex items-center gap-2 mt-3 flex-wrap">
                       <button disabled={!canSave || busy} onClick={addOrUpdateMatch} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">{busy ? 'שומר…' : (editingId? 'עדכן משחק' : 'שמור משחק')}</button>
                       {editingId && <button className="px-3 py-1.5 rounded-xl border" onClick={()=>clearForm()}>בטל עריכה</button>}
                     </div>
@@ -590,12 +634,13 @@
                 <div className="grid md:grid-cols-2 gap-4">
                   <div className="rounded-xl border p-3">
                     <h3 className="font-medium mb-2">סשנים</h3>
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <select className="border rounded-lg px-2 py-1" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
                         <option value="">— בחרו —</option>
                         {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
                       </select>
                       <button onClick={async()=>{await ensureSession();}} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">Session חדש/היום</button>
+                      <button onClick={resetSessionsFromMatches} className="px-3 py-1.5 rounded-xl border">איפוס סשנים לפי משחקים</button>
                     </div>
                     <div className="max-h-64 overflow-auto border rounded-xl">
                       <table className="w-full text-sm">
@@ -635,16 +680,17 @@
                       <button onClick={exportCsv} className="px-3 py-1.5 rounded-xl border">ייצוא CSV של משחקים</button>
                       <button onClick={testWrite} className="px-3 py-1.5 rounded-xl border">בדיקת חיבור</button>
                       <button onClick={checkIndex} className="px-3 py-1.5 rounded-xl border">בדיקת אינדקס date+round</button>
+                      <button onClick={nukeAll} className="px-3 py-1.5 rounded-xl border bg-rose-50 text-rose-700">מחיקה מלאה (סשנים+משחקים)</button>
                     </div>
                     <p className="text-xs text-slate-500 mt-3">
-                      מחיקת סשן מוחקת גם את כל המשחקים של אותו היום.
+                      "איפוס סשנים לפי משחקים" מוחק את כל הסשנים ובונה מחדש סשן יחיד לכל תאריך שקיים במשחקים, ומעדכן את ה-sessionId במשחקים.
                     </p>
                   </div>
                 </div>
               </section>
             )}
 
-            <footer className="py-6 text-center text-xs text-slate-500">Made with ♥ · Firestore · v15</footer>
+            <footer className="py-6 text-center text-xs text-slate-500">Made with ♥ · Firestore · v16</footer>
           </div>
         </div>
       );

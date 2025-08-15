@@ -683,14 +683,18 @@
                     </select>
                   </div>
                 </div>
-                {sessionSummary.winner
-                  ? <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 mb-3">
-                      <div className="text-sm text-emerald-700">תאריך: {sessionSummary.date || '-'}</div>
-                      <div className="text-lg font-semibold text-emerald-900 mt-1">🏆 הזוג המנצח: {sessionSummary.winner.pair}</div>
-                      <div className="text-sm text-emerald-800">נצחונות: {sessionSummary.winner.wins} · משחקים: {sessionSummary.winner.games} · הפרש: {sessionSummary.winner.diff}</div>
-                    </div>
-                  : <p className="text-sלת-600">אין עדיין משחקים בסשן הנבחר.</p>
-                }
+               {sessionSummary.winner ? (
+  <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 mb-3">
+    <div className="text-sm text-emerald-700">תאריך: {sessionSummary.date || '-'}</div>
+    <div className="text-lg font-semibold text-emerald-900 mt-1">🏆 הזוג המנצח: {sessionSummary.winner.pair}</div>
+    <div className="text-sm text-emerald-800">
+      נצחונות: {sessionSummary.winner.wins} · משחקים: {sessionSummary.winner.games} · הפרש: {sessionSummary.winner.diff}
+    </div>
+  </div>
+) : (
+  <p className="text-slate-600">אין עדיין משחקים בסשן הנבחר.</p>
+)}
+
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead>

@@ -1,25 +1,270 @@
-<section className="mb-6 bg-white rounded-2xl shadow p-4">
-  <h2 className="font-semibold mb-3">שחקנים</h2>
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Padel Buddy – אפליקציית פאדל</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#0f172a"/>
+  <link rel="apple-touch-icon" href="icon-192.png">
 
-  <!-- גריד נוח למובייל: עמודה אחת, וב־sm נהיה שתי עמודות -->
-  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-    {players.map((p,i)=>(
-      <div key={i} className="flex items-center gap-2 min-w-0">
-        <label className="w-20 text-sm text-slate-600 shrink-0">שחקן {i+1}</label>
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
 
-        <!-- שים לב: w-full + min-w-0 + flex-1 מונע גלישה -->
-        <input
-          value={p}
-          onChange={e=>updatePlayer(i, e.target.value)}
-          className="w-full min-w-0 flex-1 px-3 py-2 rounded-lg border bg-white focus:outline-none focus:ring focus:ring-indigo-200"
-        />
-      </div>
-    ))}
-  </div>
+  <!-- React + ReactDOM + Babel (JSX inline) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <div className="mt-3">
-    <button onClick={savePlayers} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">
-      שמור שמות לשיתוף
-    </button>
-  </div>
-</section>
+  <!-- Firebase compat -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+
+  <style>
+    /* מניעת "זליגת" שדות מספר במובייל */
+    input[type="number"] { -moz-appearance: textfield; }
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-slate-50 to-slate-100">
+  <div id="root"></div>
+
+  <!-- Service Worker (PWA) -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", async () => {
+        try {
+          const reg = await navigator.serviceWorker.register("./service-worker.js");
+          reg.update?.();
+          navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
+        } catch (e) { console.log("SW register error", e); }
+      });
+    }
+  </script>
+
+  <!-- App -->
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // ***** Firebase config (שלך) *****
+    const firebaseConfig = {
+      apiKey: "AIzaSyC57SCpJgj8OuYilKfGslweGX1eePRKzZE",
+      authDomain: "padel-e5ab0.firebaseapp.com",
+      projectId: "padel-e5ab0",
+      storageBucket: "padel-e5ab0.appspot.com",
+      messagingSenderId: "1028798475012",
+      appId: "1:1028798475012:web:9d1ce68bf1e3018de9be51",
+      measurementId: "G-EC2YCTZ36S"
+    };
+
+    const fbApp = firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const auth = firebase.auth();
+    const provider = new firebase.auth.GoogleAuthProvider();
+
+    // Helpers
+    const toast = (msg) => {
+      const el = document.createElement('div');
+      el.textContent = msg;
+      el.className = 'fixed bottom-4 right-4 bg-black/80 text-white px-3 py-2 rounded-xl text-sm z-50';
+      document.body.appendChild(el);
+      setTimeout(()=>el.remove(), 2200);
+    };
+    function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+    function weekNumber(date){ const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate())); const dayNum=d.getUTCDay()||7; d.setUTCDate(d.getUTCDate()+4-dayNum); const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1)); return Math.ceil(((d-yearStart)/86400000+1)/7); }
+    function pairKey(a,b){ if(!a||!b) return ""; return [a,b].sort((x,y)=>x.localeCompare(y,'he')).join(" & "); }
+    function todayStr(){ const d=new Date(); return d.toISOString().slice(0,10); }
+    function niceName(u){ if(!u) return "אורח"; if(u.displayName) return u.displayName.split(" ")[0]; if(u.email) return u.email.split("@")[0]; return "חבר"; }
+
+    async function setPlayersToFirestore(list){
+      const batch = db.batch();
+      const coll = db.collection("players");
+      const existing = await coll.get();
+      existing.forEach(doc => batch.delete(doc.ref));
+      list.forEach((name, idx)=> batch.set(coll.doc(), { name, idx }));
+      await batch.commit();
+    }
+
+    function App(){
+      const [tab, setTab] = useState('record');
+
+      // Auth
+      const [user, setUser] = useState(null);
+      useEffect(()=> auth.onAuthStateChanged(setUser), []);
+      const signIn = () => auth.signInWithRedirect(provider);
+      const signOut = () => auth.signOut();
+
+      // Players
+      const [players, setPlayers] = useState(["שחקן 1","שחקן 2","שחקן 3","שחקן 4","שחקן 5"]);
+      const [playersLoaded, setPlayersLoaded] = useState(false);
+      const [err, setErr] = useState("");
+
+      useEffect(()=>{
+        const unsub = db.collection("players").orderBy("idx").onSnapshot(
+          snap=>{
+            if(!snap.empty){
+              setPlayers(snap.docs.map(d=> d.data().name));
+              setPlayersLoaded(true);
+            } else {
+              setPlayersToFirestore(players).then(()=> setPlayersLoaded(true));
+            }
+          },
+          e=> setErr(e.message||String(e))
+        );
+        return ()=>unsub();
+      }, []);
+
+      const updatePlayer = (idx, name)=> {
+        const a=[...players]; a[idx]=name; setPlayers(a);
+      };
+      const savePlayers = async()=> {
+        try { await setPlayersToFirestore(players); toast("נשמר"); }
+        catch(e){ alert("שגיאת שמירת שחקנים: "+(e.message||e)); }
+      };
+
+      // Attendance + draw
+      const [attendance, setAttendance] = useState(()=> Object.fromEntries(players.map(p=>[p,true])));
+      useEffect(()=>{
+        const next={}; players.forEach(p=> next[p] = attendance[p] ?? true); setAttendance(next);
+      }, [players.join("|")]);
+      const todaysPlayers = useMemo(()=> players.filter(p=>attendance[p]), [players, attendance]);
+      const [draw, setDraw] = useState({});
+      const runDraw = ()=>{
+        const present = todaysPlayers.filter(Boolean);
+        if(present.length<4){ alert("צריך לפחות 4 שחקנים"); return; }
+        const s = shuffle(present);
+        if(s.length===4) setDraw({A1:s[0],A2:s[1],B1:s[2],B2:s[3]});
+        else setDraw({A1:s[0],A2:s[1],B1:s[2],B2:s[3],bench:s[4]});
+      };
+
+      // Sessions
+      const [currentSessionId, setCurrentSessionId] = useState("");
+      const [sessions, setSessions] = useState([]);
+
+      useEffect(()=>{
+        const unsub = db.collection("sessions").orderBy("date","desc").onSnapshot(
+          snap=>{
+            const arr = snap.docs.map(d=>({id:d.id, ...d.data()}));
+            setSessions(arr);
+            if(!currentSessionId && arr.length) setCurrentSessionId(arr[0].id);
+          },
+          e=> setErr(e.message||String(e))
+        );
+        return ()=>unsub();
+      }, []);
+
+      const ensureSession = async ()=>{
+        const today = todayStr();
+        const fromState = sessions.find(s=>s.date===today);
+        if(fromState){ setCurrentSessionId(fromState.id); toast("כבר קיים סשן להיום – בחרתי אותו ✅"); return fromState.id; }
+        const snap = await db.collection("sessions").where("date","==",today).limit(1).get();
+        if(!snap.empty){ const id=snap.docs[0].id; setCurrentSessionId(id); toast("כבר קיים סשן להיום – בחרתי אותו ✅"); return id; }
+        const ref = await db.collection("sessions").add({ date: today, label: `מפגש ${today}` });
+        setCurrentSessionId(ref.id); toast("נוצר סשן חדש ✅"); return ref.id;
+      };
+
+      const renameSession = async (s)=>{
+        const label = prompt("שם חדש למפגש:", s.label || ("מפגש "+s.date));
+        if(!label) return;
+        await db.collection("sessions").doc(s.id).update({label});
+        toast("עודכן");
+      };
+
+      const deleteSession = async (s)=>{
+        if(!confirm("למחוק את המפגש הזה ואת כל המשחקים של אותו היום?")) return;
+        const ids = new Set();
+        const q1 = await db.collection("matches").where("sessionId","==",s.id).get();
+        q1.docs.forEach(d=>ids.add(d.id));
+        const q2 = await db.collection("matches").where("date","==",s.date).get();
+        q2.docs.forEach(d=>ids.add(d.id));
+        const batch = db.batch();
+        ids.forEach(id=> batch.delete(db.collection("matches").doc(id)));
+        batch.delete(db.collection("sessions").doc(s.id));
+        await batch.commit();
+        toast(`המפגש וכל משחקי אותו היום נמחקו (${ids.size})`);
+        if(currentSessionId===s.id) setCurrentSessionId("");
+      };
+
+      // Reset sessions from matches (merge by date)
+      const resetSessionsFromMatches = async ()=>{
+        if(!confirm("לאפס את כל הסשנים לפי תאריכי המשחקים ולעדכן sessionId במשחקים?")) return;
+        const matchesSnap = await db.collection("matches").get();
+        const sessSnap = await db.collection("sessions").get();
+        const b1 = db.batch(); sessSnap.forEach(doc=> b1.delete(doc.ref)); await b1.commit();
+        const map = new Map(); // date -> new sessionId
+        for(const doc of matchesSnap.docs){
+          const d = doc.data(); const date = d.date || todayStr();
+          if(!map.has(date)){
+            const ref = await db.collection("sessions").add({date, label:`מפגש ${date}`});
+            map.set(date, ref.id);
+          }
+        }
+        const b2 = db.batch();
+        matchesSnap.forEach(doc=>{ const d=doc.data(); const sid = map.get(d.date || todayStr()); b2.update(doc.ref, {sessionId: sid}); });
+        await b2.commit();
+        toast("סשנים אופסו ונבנו מחדש לפי תאריך ✔");
+      };
+
+      const nukeAll = async ()=>{
+        if(!confirm("למחוק את כל הסשנים וכל המשחקים?")) return;
+        const m1 = await db.collection("matches").get();
+        const b = db.batch(); m1.forEach(d=> b.delete(d.ref));
+        const s1 = await db.collection("sessions").get();
+        s1.forEach(d=> b.delete(d.ref));
+        await b.commit();
+        toast("כל הנתונים נמחקו ✔");
+      };
+
+      // Record match
+      const [round, setRound] = useState(1);
+      const [format, setFormat] = useState('15');
+      const [A1, setA1] = useState(''); const [A2, setA2] = useState('');
+      const [B1, setB1] = useState(''); const [B2, setB2] = useState('');
+      const [scoreA, setScoreA] = useState(''); const [scoreB, setScoreB] = useState('');
+      const [editingId, setEditingId] = useState("");
+      const [busy, setBusy] = useState(false);
+
+      useEffect(()=>{
+        if(draw.A1) setA1(draw.A1); if(draw.A2) setA2(draw.A2);
+        if(draw.B1) setB1(draw.B1); if(draw.B2) setB2(draw.B2);
+      }, [draw.A1, draw.A2, draw.B1, draw.B2]);
+
+      const allChosenUnique = useMemo(()=>{
+        const arr=[A1,A2,B1,B2]; if(arr.some(v=>!v)) return false; return (new Set(arr)).size===4;
+      }, [A1,A2,B1,B2]);
+      const canSave = allChosenUnique && scoreA!=='' && scoreB!=='' && Number(scoreA)!=Number(scoreB);
+
+      // Matches
+      const [matches, setMatches] = useState([]);
+      useEffect(()=>{
+        const unsub = db.collection("matches").orderBy("date").onSnapshot(
+          snap=>{
+            const arr = snap.docs.map(d=> ({id:d.id, ...d.data()}));
+            arr.sort((a,b)=> (a.date||'').localeCompare(b.date||'') || (a.round||0)-(b.round||0) );
+            setMatches(arr);
+          },
+          e=> setErr(e.message||String(e))
+        );
+        return ()=>unsub();
+      }, []);
+
+      // Auto round number per session
+      useEffect(()=>{
+        if(!currentSessionId) return;
+        const list = matches.filter(m=>m.sessionId===currentSessionId);
+        const last = list.length ? Math.max(...list.map(m=>Number(m.round||0))) : 0;
+        if(!editingId) setRound(last+1);
+      }, [currentSessionId, matches.length, editingId]);
+
+      const clearForm = ()=>{ setA1('');setA2('');setB1('');setB2('');setScoreA('');setScoreB('');setFormat('15');setEditingId(''); };
+
+      const addOrUpdateMatch = async ()=>{
+        try{
+          setBusy(true);
+          const sid = await ensureSession();
+          if(!allChosenUnique){ alert("בחרו 4 שחקנים שונים"); setBusy(false); return; }
+          const nA = Number(scoreA), nB = Number(scoreB);
+          if(Number.isNaN(nA)||Number.isNaN(nB)){ alert("נא להזין נקודות/גיימים מספריים"); setBusy(false); return; }
+          if(nA=

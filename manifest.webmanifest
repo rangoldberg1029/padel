@@ -1,7 +1,7 @@
 {
   "name": "Padel Buddy",
   "short_name": "PadelBuddy",
-  "description": "אפליקציה לקבוצת פאדל – הגרלה, הזנת משחקים וסטטיסטיקות שיתופיות",
+  "description": "אפליקציית פאדל – הגרלה, הזנת משחקים וסטטיסטיקות שיתופיות",
   "lang": "he",
   "dir": "rtl",
   "start_url": ".",

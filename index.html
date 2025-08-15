@@ -15,13 +15,18 @@
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
   <style>
-    .btn { @apply px-3 py-1.5 rounded-xl border transition active:scale-95; }
-    .btn-primary { @apply bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700; }
-    .btn-danger { @apply bg-rose-600 text-white border-rose-600 hover:bg-rose-700; }
-    .btn-ghost { @apply hover:bg-slate-100; }
-    .card { @apply bg-white rounded-2xl shadow p-4; }
-    .field { @apply border rounded-lg px-2 py-1; }
-    .tag { @apply text-xs px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200; }
+    /* Basic utility helpers (no @apply to ensure Tailwind via CDN works) */
+    .btn { padding: 0.4rem 0.8rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; background:#f8fafc; }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background:#4f46e5; color:#fff; border-color:#4f46e5; }
+    .btn-danger { background:#e11d48; color:#fff; border-color:#e11d48; }
+    .btn-ghost { background:#ffffff; }
+    .btn[disabled] { opacity:.6; cursor:not-allowed; }
+    .card { background:#fff; border-radius:1rem; box-shadow:0 10px 20px -10px rgba(2,8,23,.2); padding:1rem; }
+    .field { border:1px solid #cbd5e1; border-radius:.5rem; padding:.4rem .5rem; }
+    .tag { font-size:.75rem; padding:.2rem .5rem; border-radius:999px; background:#eff6ff; color:#0369a1; border:1px solid #bae6fd; }
+    .grid2 { display:grid; grid-template-columns:1fr; gap:.75rem; }
+    @media(min-width: 640px) { .grid2 { grid-template-columns: 1fr 1fr; } }
   </style>
 </head>
 <body class="bg-gradient-to-b from-slate-50 to-slate-100">
@@ -46,9 +51,8 @@
     const db = firebase.firestore();
     const auth = firebase.auth();
     const provider = new firebase.auth.GoogleAuthProvider();
-    try { firebase.firestore.setLogLevel('debug'); } catch(_){}
 
-    const toast = (msg)=>{ const el=document.createElement('div'); el.textContent=msg; el.className='fixed bottom-4 right-4 bg-black/80 text-white px-3 py-2 rounded-xl text-sm z-50'; document.body.appendChild(el); setTimeout(()=>el.remove(),2200); };
+    const toast = (msg)=>{ const el=document.createElement('div'); el.textContent=msg; el.style.cssText='position:fixed;bottom:16px;right:16px;background:#111827cc;color:#fff;padding:8px 12px;border-radius:12px;font-size:12px;z-index:9999'; document.body.appendChild(el); setTimeout(()=>el.remove(),2200); };
 
     function shuffle(arr){const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
     function weekNumber(date){const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()));const dayNum=d.getUTCDay()||7;d.setUTCDate(d.getUTCDate()+4-dayNum);const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1));return Math.ceil(((d-yearStart)/86400000+1)/7);}
@@ -73,7 +77,7 @@
       const [user, setUser] = useState(null);
       const [busy, setBusy] = useState(false);
 
-      useEffect(()=> auth.onAuthStateChanged(setUser), []);
+      React.useEffect(()=> auth.onAuthStateChanged(setUser), []);
       const signIn = () => auth.signInWithRedirect(provider);
       const signOut = () => auth.signOut();
 
@@ -116,10 +120,14 @@
       }, []);
 
       const ensureSession = async ()=>{
-        if(currentSessionId) return currentSessionId;
-        const d = todayStr();
-        const ref = await db.collection("sessions").add({ date: d, label: `מפגש ${d}` });
+        const today = todayStr();
+        // If a session for today already exists, reuse it
+        const existing = sessions.find(s=>s.date===today);
+        if(existing){ setCurrentSessionId(existing.id); toast("כבר קיים סשן להיום – בחרתי אותו ✅"); return existing.id; }
+        // Otherwise create
+        const ref = await db.collection("sessions").add({ date: today, label: `מפגש ${today}` });
         setCurrentSessionId(ref.id);
+        toast("נוצר סשן חדש ✅");
         return ref.id;
       };
 
@@ -131,528 +139,13 @@
       };
 
       const deleteSession = async (s)=>{
-        if(!confirm("למחוק את המפגש הזה ואת כל המשחקים שבתוכו?")) return;
-        const snap = await db.collection("matches").where("sessionId","==",s.id).get();
-        const batch = db.batch();
-        snap.docs.forEach(doc=> batch.delete(doc.ref));
-        batch.delete(db.collection("sessions").doc(s.id));
-        await batch.commit();
-        toast("המפגש וכל משחקיו נמחקו ("+snap.size+")");
-        if(currentSessionId===s.id) setCurrentSessionId("");
+        if(!confirm("למחוק את המפגש הזה ואת כל המשחקים של אותו היום?")) return;
+        // delete by sessionId
+        const q1 = await db.collection("matches").where("sessionId","==",s.id).get();
+        // delete by date (matches from same day even if sessionId different)
+        const q2 = await db.collection("matches").where("date","==",s.date).get();
+        /* placeholder removed */
       };
-
-      // record match
-      const [round, setRound] = useState(1);
-      const [format, setFormat] = useState('15');
-      const [A1, setA1] = useState(''); const [A2, setA2] = useState('');
-      const [B1, setB1] = useState(''); const [B2, setB2] = useState('');
-      const [scoreA, setScoreA] = useState(''); const [scoreB, setScoreB] = useState('');
-      const [editingId, setEditingId] = useState("");
-
-      useEffect(()=>{ if(draw.A1) setA1(draw.A1); if(draw.A2) setA2(draw.A2); if(draw.B1) setB1(draw.B1); if(draw.B2) setB2(draw.B2); }, [draw.A1, draw.A2, draw.B1, draw.B2]);
-
-      const allChosenUnique = useMemo(()=>{
-        const arr=[A1,A2,B1,B2];
-        if(arr.some(v=>!v)) return false;
-        const set=new Set(arr);
-        return set.size===4;
-      }, [A1,A2,B1,B2]);
-
-      const canSave = allChosenUnique && scoreA!=='' && scoreB!=='' && Number(scoreA)!=Number(scoreB);
-
-      // matches
-      const [matches, setMatches] = useState([]);
-      useEffect(()=>{
-        const unsub = db.collection("matches").orderBy("date").onSnapshot(
-          snap=>{ 
-            const arr = snap.docs.map(d=> ({id:d.id, ...d.data()}));
-            arr.sort((a,b)=> (a.date||'').localeCompare(b.date||'') || (a.round||0)-(b.round||0) );
-            setMatches(arr);
-          },
-          e=>{ console.error("matches onSnapshot error", e); setErr(e.message||String(e)); }
-        );
-        return ()=>unsub();
-      }, []);
-
-      useEffect(()=>{
-        if(!currentSessionId) return;
-        const list = matches.filter(m=>m.sessionId===currentSessionId);
-        const last = list.length ? Math.max(...list.map(m=>Number(m.round||0))) : 0;
-        if(!editingId) setRound(last+1);
-      }, [currentSessionId, matches.length, editingId]);
-
-      const clearForm = ()=>{ setA1('');setA2('');setB1('');setB2('');setScoreA('');setScoreB('');setFormat('15');setEditingId(''); };
-
-      const addOrUpdateMatch = async ()=>{
-        try{
-          setBusy(true);
-          const sid = await ensureSession();
-          if(!allChosenUnique){ alert("בחרו 4 שחקנים שונים"); setBusy(false); return; }
-          const nA = Number(scoreA), nB = Number(scoreB);
-          if(Number.isNaN(nA)||Number.isNaN(nB)){ alert("נא להזין נקודות/גיימים מספריים"); setBusy(false); return; }
-          if(nA===nB){ alert("צריך מנצח ברור (אין תיקו)"); setBusy(false); return; }
-          const winner = nA>nB? 'A':'B';
-          if(editingId){
-            await db.collection("matches").doc(editingId).update({
-              sessionId: sid, round: Number(round)||1, format, A1, A2, B1, B2, scoreA: nA, scoreB: nB, winner
-            });
-            toast("המשחק עודכן ✔");
-          } else {
-            const date = todayStr();
-            await db.collection("matches").add({
-              date, week: weekNumber(new Date(date)), sessionId: sid,
-              round: Number(round)||1, format, A1, A2, B1, B2, scoreA: nA, scoreB: nB, winner
-            });
-            toast("המשחק נשמר ✔");
-            setRound(r=>Number(r||0)+1);
-          }
-          clearForm();
-        }catch(e){ alert("שגיאה בשמירה: " + (e.message||e)); setErr(e.message||String(e)); }
-        finally{ setBusy(false); }
-      };
-
-      const editMatch = (m)=>{
-        setCurrentSessionId(m.sessionId||"");
-        setRound(m.round||1);
-        setFormat(m.format||'15');
-        setA1(m.A1||''); setA2(m.A2||'');
-        setB1(m.B1||''); setB2(m.B2||'');
-        setScoreA(m.scoreA!=null? String(m.scoreA):''); setScoreB(m.scoreB!=null? String(m.scoreB):'');
-        setEditingId(m.id);
-        setTab('record');
-      };
-
-      const deleteMatch = async (m)=>{
-        if(!confirm("למחוק את המשחק הזה?")) return;
-        await db.collection("matches").doc(m.id).delete();
-        toast("המשחק נמחק");
-      };
-
-      // stats
-      const pairStats = useMemo(()=>{
-        const map = new Map();
-        matches.forEach(m=>{
-          const pkA = pairKey(m.A1, m.A2);
-          const pkB = pairKey(m.B1, m.B2);
-          if(!map.has(pkA)) map.set(pkA, { pair:pkA, games:0,wins:0,losses:0,winPct:0,ptsFor:0,ptsAgainst:0,diff:0,sabs:0,hotStreak:0 });
-          if(!map.has(pkB)) map.set(pkB, { pair:pkB, games:0,wins:0,losses:0,winPct:0,ptsFor:0,ptsAgainst:0,diff:0,sabs:0,hotStreak:0 });
-          const a = map.get(pkA), b = map.get(pkB);
-          a.games++; b.games++;
-          a.ptsFor += Number(m.scoreA)||0; a.ptsAgainst += Number(m.scoreB)||0;
-          b.ptsFor += Number(m.scoreB)||0; b.ptsAgainst += Number(m.scoreA)||0;
-          if(m.winner==='A'){ a.wins++; b.losses++; } else { b.wins++; a.losses++; }
-        });
-        const bySession = new Map();
-        matches.forEach(m=>{ if(!bySession.has(m.sessionId)) bySession.set(m.sessionId, []); bySession.get(m.sessionId).push(m); });
-        bySession.forEach(arr=>{
-          arr.sort((x,y)=> (x.round||0) - (y.round||0) || (x.date||'').localeCompare(y.date||'') );
-          let currentWinnerPair = ""; let streakCount = 0;
-          arr.forEach(m=>{
-            const winnerPair = m.winner==='A'? pairKey(m.A1,m.A2):pairKey(m.B1,m.B2);
-            if(winnerPair===currentWinnerPair) streakCount += 1; else { currentWinnerPair = winnerPair; streakCount = 1; }
-            if(streakCount===3){ const ps = map.get(winnerPair); if(ps) ps.sabs += 1; streakCount = 0; currentWinnerPair = ""; }
-          });
-        });
-        const all = [...matches].sort((x,y)=> (x.date||'').localeCompare(y.date||'') || (x.round||0)-(y.round||0));
-        const streaks = new Map();
-        all.forEach(m=>{
-          const wp = m.winner==='A'? pairKey(m.A1,m.A2):pairKey(m.B1,m.B2);
-          const lp = m.winner==='A'? pairKey(m.B1,m.B2):pairKey(m.A1,m.A2);
-          streaks.set(wp,(streaks.get(wp)||0)+1);
-          streaks.set(lp,0);
-        });
-        map.forEach((v,k)=>{ v.winPct = v.games? v.wins/v.games:0; v.diff = v.ptsFor - v.ptsAgainst; v.hotStreak = streaks.get(k)||0; });
-        return Array.from(map.values()).sort((a,b)=> b.winPct - a.winPct || b.wins - a.wins);
-      }, [matches]);
-
-      const currentWeek = weekNumber(new Date());
-      const weekTable = useMemo(()=>{
-        const map = new Map();
-        matches.filter(m=>m.week===currentWeek).forEach(m=>{
-          const pkA = pairKey(m.A1, m.A2);
-          const pkB = pairKey(m.B1, m.B2);
-          const winnerPk = m.winner==='A'? pkA: pkB;
-          if(!map.has(pkA)) map.set(pkA, {pair:pkA,wins:0,games:0,pct:0,diff:0});
-          if(!map.has(pkB)) map.set(pkB, {pair:pkB,wins:0,games:0,pct:0,diff:0});
-          map.get(pkA).games++; map.get(pkB).games++;
-          map.get(winnerPk).wins++;
-          map.get(pkA).diff += ((Number(m.scoreA)||0) - ((Number(m.scoreB)||0)));
-          map.get(pkB).diff += ((Number(m.scoreB)||0) - ((Number(m.scoreA)||0)));
-        });
-        map.forEach(v=>{ v.pct = v.games? v.wins/v.games:0; });
-        return Array.from(map.values()).sort((a,b)=> b.wins - a.wins || b.pct - a.pct || b.diff - a.diff);
-      }, [matches, currentWeek]);
-
-      const exportCsv = async()=>{
-        try {
-          const rows = [["date","week","sessionId","round","format","A1","A2","B1","B2","scoreA","scoreB","winner"]];
-          matches.forEach(m=> rows.push([m.date,m.week,m.sessionId,m.round,m.format,m.A1,m.A2,m.B1,m.B2,m.scoreA,m.scoreB,m.winner]));
-          const csv = rows.map(r=> r.join(",")).join("\n");
-          const blob = new Blob([csv], {type:"text/csv"});
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a"); a.href = url; a.download = `matches-${todayStr()}.csv`; a.click(); URL.revokeObjectURL(url);
-        } catch(e) { console.error(e); alert("שגיאה ביצוא CSV: " + (e.message||e)); }
-      };
-
-      const checkIndex = async()=>{
-        try{ await db.collection('matches').orderBy('date').orderBy('round').limit(1).get(); alert('✅ האינדקס (date+round) קיים ופועל'); }
-        catch(e){ alert('⚠️ חסר אינדקס ל-date+round או בעיית הרשאה:\n' + (e.message||e)); }
-      };
-
-      const testWrite = async()=>{
-        try{ await db.collection("healthchecks").add({ts:Date.now(), ok:true}); alert("חיבור Firestore תקין ✔"); }
-        catch(e){ alert("שגיאת Firestore: " + (e.message||e)); }
-      };
-
-      return (
-        <div dir="rtl" className="min-h-screen text-slate-900 p-4">
-          <div className="max-w-6xl mx-auto">
-            <header className="mb-4 p-4 rounded-2xl bg-gradient-to-l from-indigo-600 to-teal-500 text-white shadow flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <img src="icon-192.png" className="w-8 h-8 rounded-xl" alt="" />
-                <div>
-                  <h1 className="text-xl font-bold">Padel Buddy</h1>
-                  <div className="text-[11px] opacity-90">Project: {firebaseConfig.projectId} · v12</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm">שלום {niceName(user)}</span>
-                {user
-                  ? <button onClick={signOut} className="btn btn-ghost bg-white/10 text-white">התנתק</button>
-                  : <button onClick={signIn} className="btn btn-ghost bg-white/10 text-white">כניסה עם Google</button>}
-              </div>
-            </header>
-
-            {err && <div className="mb-4 p-3 rounded-xl bg-rose-50 text-rose-700 border border-rose-200">
-              ⚠️ שגיאת חיבור/הרשאות: {err}
-            </div>}
-
-            <nav className="mb-4 flex flex-wrap gap-2">
-              {[
-                {k:'draw',t:'הגרלה'},
-                {k:'record',t:'הזנת משחק'},
-                {k:'stats',t:'סטטיסטיקות'},
-                {k:'week',t:'זוג השבוע'},
-                {k:'admin',t:'ניהול וגיבוי'},
-              ].map(({k,t}) => (
-                <button key={k} onClick={()=>setTab(k)} className={"btn " + (tab===k?'bg-white shadow':'bg-slate-100 hover:bg-white')}>{t}</button>
-              ))}
-            </nav>
-
-            <section className="mb-6 card">
-              <h2 className="font-semibold mb-2">שחקנים</h2>
-              <div className="grid sm:grid-cols-5 grid-cols-2 gap-2">
-                {players.map((p,i)=>(
-                  <input key={i} value={p} onChange={e=>updatePlayer(i, e.target.value)} className="field" />
-                ))}
-              </div>
-              <div className="mt-3">
-                <button onClick={savePlayers} className="btn btn-primary">שמור שמות לשיתוף</button>
-                {!playersLoaded && <span className="text-xs text-slate-500 mr-2">טוען/שומר…</span>}
-              </div>
-            </section>
-
-            {tab==='draw' && (
-              <section className="card">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="font-semibold">הגרלה</h2>
-                  <div className="flex items-center gap-2">
-                    <button onClick={async()=>{await ensureSession(); toast('Session מוכן ✅');}} className="btn btn-primary">פתח/אשר Session</button>
-                    <select className="field" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
-                      <option value="">— בחרו —</option>
-                      {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
-                    </select>
-                  </div>
-                </div>
-
-                <p className="text-sm mb-2">סמנו מי הגיע היום:</p>
-                <div className="grid sm:grid-cols-5 grid-cols-2 gap-2 mb-4">
-                  {players.map(p=>(
-                    <label key={p} className="flex items-center gap-2 px-2 py-1.5 rounded-xl border bg-slate-50">
-                      <input type="checkbox" checked={!!attendance[p]} onChange={()=> setAttendance(a=>({...a, [p]: !a[p]}))} />
-                      <span>{p}</span>
-                    </label>
-                  ))}
-                </div>
-
-                <button onClick={runDraw} className="btn btn-primary">הגרל זוגות</button>
-
-                {"A1" in (draw||{}) && (
-                  <div className="mt-4 grid sm:grid-cols-3 gap-4">
-                    <div className="rounded-xl border p-3">
-                      <div className="text-sm text-slate-600 mb-1">זוג A</div>
-                      <div className="text-lg font-semibold">{draw.A1} &nbsp;–&nbsp; {draw.A2}</div>
-                    </div>
-                    <div className="rounded-xl border p-3">
-                      <div className="text-sm text-slate-600 mb-1">זוג B</div>
-                      <div className="text-lg font-semibold">{draw.B1} &nbsp;–&nbsp; {draw.B2}</div>
-                    </div>
-                    {"bench" in draw && (
-                      <div className="rounded-xl border p-3 bg-amber-50">
-                        <div className="text-sm text-slate-600 mb-1">בחוץ</div>
-                        <div className="text-lg font-semibold">{draw.bench}</div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <p className="text-xs text-slate-500 mt-3">טיפ: כשאתם 5 – מחליפים כל משחק את השחקן שבחוץ לפי התור.</p>
-              </section>
-            )}
-
-            {tab==='record' && (
-              <section className="card">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-semibold mb-3">הזנת/עריכת משחק</h2>
-                  {editingId && <span className="tag">מצב עריכה</span>}
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-xl border p-3">
-                    <label className="text-sm">סשן</label>
-                    <div className="flex items-center gap-2 mt-1">
-                      <select className="field" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
-                        <option value="">— בחרו —</option>
-                        {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
-                      </select>
-                      <button onClick={async()=>{await ensureSession(); toast('Session מוכן ✅');}} className="btn btn-primary">Session חדש</button>
-                    </div>
-                    <div className="mt-3">
-                      <label className="text-sm">רונד #</label>
-                      <input type="number" className="field ml-2 w-24" value={round} onChange={e=>setRound(parseInt(e.target.value||'1'))} />
-                    </div>
-                    <div className="mt-3">
-                      <label className="text-sm mr-2">פורמט</label>
-                      <select className="field" value={format} onChange={e=>setFormat(e.target.value)}>
-                        <option value="15">עד 15 נקודות</option>
-                        <option value="SET">סט אחד (6 גיימים)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border p-3">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <div className="text-sm text-slate-600">זוג A</div>
-                        <select className="field w-full mt-1" value={A1} onChange={e=>setA1(e.target.value)}>
-                          <option value="">—</option>
-                          {players.map(p=><option key={p} value={p}>{p}</option>)}
-                        </select>
-                        <select className="field w-full mt-2" value={A2} onChange={e=>setA2(e.target.value)}>
-                          <option value="">—</option>
-                          {players.map(p=><option key={p} value={p}>{p}</option>)}
-                        </select>
-                        <div className="mt-2">
-                          <label className="text-sm">נק׳/גיימים A</label>
-                          <input type="number" className="field w-24 ml-2" value={scoreA} onChange={e=>setScoreA(e.target.value)} />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-slate-600">זוג B</div>
-                        <select className="field w-full mt-1" value={B1} onChange={e=>setB1(e.target.value)}>
-                          <option value="">—</option>
-                          {players.map(p=><option key={p} value={p}>{p}</option>)}
-                        </select>
-                        <select className="field w-full mt-2" value={B2} onChange={e=>setB2(e.target.value)}>
-                          <option value="">—</option>
-                          {players.map(p=><option key={p} value={p}>{p}</option>)}
-                        </select>
-                        <div className="mt-2">
-                          <label className="text-sm">נק׳/גיימים B</label>
-                          <input type="number" className="field w-24 ml-2" value={scoreB} onChange={e=>setScoreB(e.target.value)} />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 mt-3">
-                      <button disabled={!canSave || busy} onClick={addOrUpdateMatch} className={"btn btn-primary " + (!canSave||busy?'opacity-60 cursor-not-allowed':'')}>{busy ? 'שומר…' : (editingId? 'עדכן משחק' : 'שמור משחק')}</button>
-                      {editingId && <button className="btn" onClick={()=>clearForm()}>בטל עריכה</button>}
-                    </div>
-                    {!allChosenUnique && <p className="text-xs text-rose-600 mt-2">יש לבחור 4 שחקנים שונים.</p>}
-                    {(scoreA===''||scoreB==='') && <p className="text-xs text-amber-600 mt-1">יש להזין נקודות/גיימים לשתי הקבוצות.</p>}
-                    {(scoreA!==''&&scoreB!==''&&Number(scoreA)==Number(scoreB)) && <p className="text-xs text-amber-600 mt-1">אין תיקו – בחרו מנצח.</p>}
-                  </div>
-                </div>
-
-                <div className="mt-6">
-                  <h3 className="font-semibold mb-2">משחקים אחרונים</h3>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full text-sm">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="text-right p-2">תאריך</th>
-                          <th className="text-right p-2">Session</th>
-                          <th className="text-right p-2">רונד</th>
-                          <th className="text-right p-2">פורמט</th>
-                          <th className="text-right p-2">A</th>
-                          <th className="text-right p-2">B</th>
-                          <th className="text-right p-2">תוצאה</th>
-                          <th className="text-right p-2">מנצח</th>
-                          <th className="text-right p-2">פעולות</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[...matches].slice(-12).reverse().map(m=>(
-                          <tr key={m.id} className="border-b">
-                            <td className="p-2 whitespace-nowrap">{m.date}</td>
-                            <td className="p-2">{(sessions.find(s=>s.id===m.sessionId)?.label) || m.sessionId}</td>
-                            <td className="p-2">{m.round}</td>
-                            <td className="p-2">{m.format==='15'? 'עד 15':'סט'}</td>
-                            <td className="p-2">{m.A1} & {m.A2}</td>
-                            <td className="p-2">{m.B1} & {m.B2}</td>
-                            <td className="p-2">{m.scoreA} : {m.scoreB}</td>
-                            <td className="p-2">{m.winner}</td>
-                            <td className="p-2 whitespace-nowrap">
-                              <button className="btn btn-ghost" onClick={()=>editMatch(m)}>ערוך</button>
-                              <button className="btn btn-danger ml-1" onClick={()=>deleteMatch(m)}>מחק</button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {tab==='stats' && (
-              <section className="card">
-                <h2 className="font-semibold mb-3">סטטיסטיקות לזוגות</h2>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="border-b bg-slate-50">
-                        <th className="text-right p-2">זוג</th>
-                        <th className="text-right p-2">משחקים</th>
-                        <th className="text-right p-2">נצחונות</th>
-                        <th className="text-right p-2">הפסדים</th>
-                        <th className="text-right p-2">% נצחון</th>
-                        <th className="text-right p-2">נק׳ בעד</th>
-                        <th className="text-right p-2">נק׳ נגד</th>
-                        <th className="text-right p-2">הפרש</th>
-                        <th className="text-right p-2">סבבים</th>
-                        <th className="text-right p-2">רצף נוכחי</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pairStats.map(ps=>(
-                        <tr key={ps.pair} className="border-b hover:bg-slate-50">
-                          <td className="p-2 whitespace-nowrap">{ps.pair}</td>
-                          <td className="p-2 text-center">{ps.games}</td>
-                          <td className="p-2 text-center">{ps.wins}</td>
-                          <td className="p-2 text-center">{ps.losses}</td>
-                          <td className="p-2 text-center">{(ps.winPct*100).toFixed(0)}%</td>
-                          <td className="p-2 text-center">{ps.ptsFor}</td>
-                          <td className="p-2 text-center">{ps.ptsAgainst}</td>
-                          <td className="p-2 text-center">{ps.diff}</td>
-                          <td className="p-2 text-center">{ps.sabs}</td>
-                          <td className="p-2 text-center">{ps.hotStreak}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            )}
-
-            {tab==='week' && (
-              <section className="card">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="font-semibold">זוג השבוע</h2>
-                  <div className="text-sm text-slate-600">שבוע {currentWeek}</div>
-                </div>
-                {weekTable.length ? (
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full text-sm">
-                      <thead>
-                        <tr className="border-b bg-slate-50">
-                          <th className="text-right p-2">זוג</th>
-                          <th className="text-right p-2">נצחונות</th>
-                          <th className="text-right p-2">משחקים</th>
-                          <th className="text-right p-2">% נצחון</th>
-                          <th className="text-right p-2">הפרש נק׳</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {weekTable.map(r=>(
-                          <tr key={r.pair} className="border-b">
-                            <td className="p-2 whitespace-nowrap">{r.pair}</td>
-                            <td className="p-2 text-center">{r.wins}</td>
-                            <td className="p-2 text-center">{r.games}</td>
-                            <td className="p-2 text-center">{(r.pct*100).toFixed(0)}%</td>
-                            <td className="text-center">{r.diff}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : <p className="text-slate-600">אין עדיין משחקים השבוע.</p>}
-                <p className="text-xs text-slate-500 mt-3">נבחן לפי: נצחונות → אחוזים → הפרש נק׳.</p>
-              </section>
-            )}
-
-            {tab==='admin' && (
-              <section className="card">
-                <h2 className="font-semibold mb-2">ניהול וגיבוי</h2>
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div className="rounded-xl border p-3">
-                    <h3 className="font-medium mb-2">סשנים</h3>
-                    <div className="flex items-center gap-2 mb-2">
-                      <select className="field" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
-                        <option value="">— בחרו —</option>
-                        {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
-                      </select>
-                      <button onClick={async()=>{await ensureSession(); toast('Session מוכן ✅');}} className="btn btn-primary">Session חדש</button>
-                    </div>
-                    <div className="max-h-64 overflow-auto border rounded-xl">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b bg-slate-50">
-                            <th className="text-right p-2">שם</th>
-                            <th className="text-right p-2">תאריך</th>
-                            <th className="text-right p-2">משחקים</th>
-                            <th className="text-right p-2">פעולות</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sessions.map(s=>{
-                            const count = matches.filter(m=>m.sessionId===s.id).length;
-                            return (
-                              <tr key={s.id} className="border-b">
-                                <td className="p-2">{s.label}</td>
-                                <td className="p-2 whitespace-nowrap">{s.date}</td>
-                                <td className="p-2 text-center">{count}</td>
-                                <td className="p-2 whitespace-nowrap">
-                                  <button className="btn btn-ghost" onClick={()=>renameSession(s)}>שנה שם</button>
-                                  <button className="btn btn-danger ml-1" onClick={()=>deleteSession(s)}>מחק</button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border p-3">
-                    <h3 className="font-medium mb-2">כלים</h3>
-                    <div className="flex flex-wrap gap-2">
-                      <button onClick={exportCsv} className="btn">ייצוא CSV של משחקים</button>
-                      <button onClick={testWrite} className="btn">בדיקת חיבור</button>
-                      <button onClick={checkIndex} className="btn">בדיקת אינדקס date+round</button>
-                    </div>
-                    <p className="text-xs text-slate-500 mt-3">
-                      מחיקת סשן מוחקת גם את כל המשחקים שלו. מחיקת משחק מתבצעת מרשימת המשחקים בלשונית "הזנת משחק".
-                    </p>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            <footer className="py-6 text-center text-xs text-slate-500">Made with ♥ · Firestore · v12</footer>
-          </div>
-        </div>
-      );
-    }
-
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
 </html>

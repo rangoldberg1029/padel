@@ -267,4 +267,401 @@
           if(!allChosenUnique){ alert("בחרו 4 שחקנים שונים"); setBusy(false); return; }
           const nA = Number(scoreA), nB = Number(scoreB);
           if(Number.isNaN(nA)||Number.isNaN(nB)){ alert("נא להזין נקודות/גיימים מספריים"); setBusy(false); return; }
-          if(nA=
+          if(nA===nB){ alert("אין תיקו – צריך מנצח"); setBusy(false); return; }
+          const winner = nA>nB? 'A':'B';
+
+          if(editingId){
+            await db.collection("matches").doc(editingId).update({
+              sessionId: sid, round: Number(round)||1, format, A1, A2, B1, B2, scoreA: nA, scoreB: nB, winner
+            });
+            toast("המשחק עודכן ✔");
+          } else {
+            const date = todayStr();
+            await db.collection("matches").add({
+              date, week: weekNumber(new Date(date)), sessionId: sid,
+              round: Number(round)||1, format, A1, A2, B1, B2, scoreA: nA, scoreB: nB, winner
+            });
+            toast("המשחק נשמר ✔");
+            setRound(r=>Number(r||0)+1);
+          }
+          clearForm();
+        }catch(e){ alert("שגיאה בשמירה: " + (e.message||e)); setErr(e.message||String(e)); }
+        finally{ setBusy(false); }
+      };
+
+      const editMatch = (m)=>{
+        setCurrentSessionId(m.sessionId||""); setRound(m.round||1); setFormat(m.format||'15');
+        setA1(m.A1||''); setA2(m.A2||''); setB1(m.B1||''); setB2(m.B2||'');
+        setScoreA(m.scoreA!=null? String(m.scoreA):''); setScoreB(m.scoreB!=null? String(m.scoreB):'');
+        setEditingId(m.id); setTab('record');
+      };
+
+      const deleteMatch = async (m)=>{
+        if(!confirm("למחוק את המשחק הזה?")) return;
+        await db.collection("matches").doc(m.id).delete();
+        toast("המשחק נמחק");
+      };
+
+      // Pair stats
+      const pairStats = useMemo(()=>{
+        const map = new Map();
+        matches.forEach(m=>{
+          const pkA = pairKey(m.A1, m.A2), pkB = pairKey(m.B1, m.B2);
+          if(!map.has(pkA)) map.set(pkA, { pair:pkA, games:0,wins:0,losses:0,winPct:0,ptsFor:0,ptsAgainst:0,diff:0,sabs:0,hotStreak:0 });
+          if(!map.has(pkB)) map.set(pkB, { pair:pkB, games:0,wins:0,losses:0,winPct:0,ptsFor:0,ptsAgainst:0,diff:0,sabs:0,hotStreak:0 });
+          const a = map.get(pkA), b = map.get(pkB);
+          a.games++; b.games++;
+          a.ptsFor += Number(m.scoreA)||0; a.ptsAgainst += Number(m.scoreB)||0;
+          b.ptsFor += Number(m.scoreB)||0; b.ptsAgainst += Number(m.scoreA)||0;
+          if(m.winner==='A'){ a.wins++; b.losses++; } else { b.wins++; a.losses++; }
+        });
+        // סבבים (3 ניצחונות רצופים)
+        const bySession = new Map();
+        matches.forEach(m=>{ if(!bySession.has(m.sessionId)) bySession.set(m.sessionId, []); bySession.get(m.sessionId).push(m); });
+        bySession.forEach(arr=>{
+          arr.sort((x,y)=> (x.round||0)-(y.round||0) || (x.date||'').localeCompare(y.date||'') );
+          let currentWinnerPair=""; let streakCount=0;
+          arr.forEach(m=>{
+            const wp = m.winner==='A'? pairKey(m.A1,m.A2):pairKey(m.B1,m.B2);
+            if(wp===currentWinnerPair) streakCount+=1; else { currentWinnerPair=wp; streakCount=1; }
+            if(streakCount===3){ const ps = map.get(wp); if(ps) ps.sabs += 1; streakCount=0; currentWinnerPair=""; }
+          });
+        });
+        // רצף חם
+        const all = [...matches].sort((x,y)=> (x.date||'').localeCompare(y.date||'') || (x.round||0)-(y.round||0));
+        const streaks = new Map();
+        all.forEach(m=>{
+          const wp = m.winner==='A'? pairKey(m.A1,m.A2):pairKey(m.B1,m.B2);
+          const lp = m.winner==='A'? pairKey(m.B1,m.B2):pairKey(m.A1,m.A2);
+          streaks.set(wp,(streaks.get(wp)||0)+1); streaks.set(lp,0);
+        });
+        map.forEach((v,k)=>{ v.winPct = v.games? v.wins/v.games:0; v.diff=v.ptsFor-v.ptsAgainst; v.hotStreak=streaks.get(k)||0; });
+        return Array.from(map.values()).sort((a,b)=> b.winPct-a.winPct || b.wins-a.wins);
+      }, [matches]);
+
+      // Session summary (winner)
+      const [currentWeek] = useState(weekNumber(new Date()));
+      const sessionSummary = useMemo(()=>{
+        if(!currentSessionId) return {rows:[], winner:null, date:null};
+        const list = matches.filter(m=>m.sessionId===currentSessionId);
+        if(!list.length) return {rows:[], winner:null, date: sessions.find(s=>s.id===currentSessionId)?.date || null};
+        const table = new Map();
+        list.forEach(m=>{
+          const pkA = pairKey(m.A1,m.A2), pkB = pairKey(m.B1,m.B2);
+          const winPk = m.winner==='A'? pkA:pkB;
+          if(!table.has(pkA)) table.set(pkA,{pair:pkA,wins:0,games:0,pct:0,diff:0});
+          if(!table.has(pkB)) table.set(pkB,{pair:pkB,wins:0,games:0,pct:0,diff:0});
+          table.get(pkA).games++; table.get(pkB).games++;
+          table.get(winPk).wins++;
+          table.get(pkA).diff += (Number(m.scoreA)||0) - (Number(m.scoreB)||0);
+          table.get(pkB).diff += (Number(m.scoreB)||0) - (Number(m.scoreA)||0);
+        });
+        table.forEach(v=> v.pct = v.games? v.wins/v.games:0);
+        const rows = Array.from(table.values()).sort((a,b)=> b.wins-a.wins || b.pct-a.pct || b.diff-a.diff);
+        const winner = rows[0] || null;
+        const date = sessions.find(s=>s.id===currentSessionId)?.date || null;
+        return {rows, winner, date};
+      }, [matches, currentSessionId, sessions]);
+
+      // Admin tools
+      const exportCsv = async()=>{
+        try{
+          const rows = [["date","week","sessionId","round","format","A1","A2","B1","B2","scoreA","scoreB","winner"]];
+          matches.forEach(m=> rows.push([m.date,m.week,m.sessionId,m.round,m.format,m.A1,m.A2,m.B1,m.B2,m.scoreA,m.scoreB,m.winner]));
+          const csv = rows.map(r=> r.join(",")).join("\n");
+          const blob = new Blob([csv], {type:"text/csv"});
+          const url = URL.createObjectURL(blob);
+          const a=document.createElement("a"); a.href=url; a.download=`matches-${todayStr()}.csv`; a.click(); URL.revokeObjectURL(url);
+        }catch(e){ alert("שגיאה ביצוא CSV: "+(e.message||e)); }
+      };
+      const checkIndex = async()=>{
+        try{ await db.collection('matches').orderBy('date').orderBy('round').limit(1).get(); alert('✅ האינדקס date+round קיים'); }
+        catch(e){ alert('⚠️ חסר אינדקס או הרשאה:\n'+(e.message||e)); }
+      };
+      const testWrite = async()=>{
+        try{ await db.collection("healthchecks").add({ts:Date.now(), ok:true}); alert("חיבור Firestore תקין ✔"); }
+        catch(e){ alert("שגיאת Firestore: "+(e.message||e)); }
+      };
+
+      // UI
+      return (
+        <div className="min-h-screen text-slate-900 p-4">
+          <div className="max-w-6xl mx-auto">
+
+            <header className="mb-4 p-4 rounded-2xl bg-gradient-to-l from-indigo-600 to-teal-500 text-white shadow flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <img src="icon-192.png" className="w-8 h-8 rounded-xl" alt="" />
+                <div>
+                  <h1 className="text-xl font-bold">Padel Buddy</h1>
+                  <div className="text-[11px] opacity-90">Project: {firebaseConfig.projectId} · v17</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm">שלום {niceName(user)}</span>
+                {user
+                  ? <button onClick={signOut} className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/30">התנתק</button>
+                  : <button onClick={signIn} className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/30">כניסה עם Google</button>}
+              </div>
+            </header>
+
+            {err && <div className="mb-4 p-3 rounded-xl bg-rose-50 text-rose-700 border border-rose-200">⚠️ {err}</div>}
+
+            <nav className="mb-4 flex flex-wrap gap-2">
+              {[
+                {k:'draw',t:'הגרלה'},
+                {k:'record',t:'הזנת משחק'},
+                {k:'stats',t:'סטטיסטיקות'},
+                {k:'session',t:'זוג הסשן'},
+                {k:'admin',t:'ניהול וגיבוי'},
+              ].map(({k,t})=>(
+                <button key={k} onClick={()=>setTab(k)}
+                        className={"px-3 py-1.5 rounded-xl border "+(tab===k?'bg-white shadow':'bg-slate-100 hover:bg-white')}>
+                  {t}
+                </button>
+              ))}
+            </nav>
+
+            {/* Players */}
+            <section className="mb-6 bg-white rounded-2xl shadow p-4">
+              <h2 className="font-semibold mb-3">שחקנים</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {players.map((p,i)=>(
+                  <div key={i} className="flex items-center gap-2 min-w-0">
+                    <label className="w-20 text-sm text-slate-600 shrink-0">שחקן {i+1}</label>
+                    <input value={p} onChange={e=>updatePlayer(i, e.target.value)}
+                           className="w-full min-w-0 flex-1 px-3 py-2 rounded-lg border bg-white focus:outline-none focus:ring focus:ring-indigo-200" />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3">
+                <button onClick={savePlayers} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">שמור שמות לשיתוף</button>
+                {!playersLoaded && <span className="text-xs text-slate-500 mr-2">טוען/שומר…</span>}
+              </div>
+            </section>
+
+            {/* Draw */}
+            {tab==='draw' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-semibold">הגרלה</h2>
+                  <div className="flex items-center gap-2">
+                    <button onClick={ensureSession} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">פתח/אשר Session</button>
+                    <select className="border rounded-lg px-2 py-1" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
+                      <option value="">— בחרו —</option>
+                      {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <p className="text-sm mb-2">סמנו מי הגיע היום:</p>
+                <div className="grid sm:grid-cols-5 grid-cols-2 gap-2 mb-4">
+                  {players.map(p=>(
+                    <label key={p} className="flex items-center gap-2 px-2 py-1.5 rounded-xl border bg-slate-50">
+                      <input type="checkbox" checked={!!attendance[p]} onChange={()=> setAttendance(a=>({...a, [p]: !a[p]}))} />
+                      <span>{p}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <button onClick={runDraw} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">הגרל זוגות</button>
+
+                {"A1" in (draw||{}) && (
+                  <div className="mt-4 grid sm:grid-cols-3 gap-4">
+                    <div className="rounded-xl border p-3">
+                      <div className="text-sm text-slate-600 mb-1">זוג A</div>
+                      <div className="text-lg font-semibold">{draw.A1} &nbsp;–&nbsp; {draw.A2}</div>
+                    </div>
+                    <div className="rounded-xl border p-3">
+                      <div className="text-sm text-slate-600 mb-1">זוג B</div>
+                      <div className="text-lg font-semibold">{draw.B1} &nbsp;–&nbsp; {draw.B2}</div>
+                    </div>
+                    {"bench" in draw && (
+                      <div className="rounded-xl border p-3 bg-amber-50">
+                        <div className="text-sm text-slate-600 mb-1">בחוץ</div>
+                        <div className="text-lg font-semibold">{draw.bench}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* Record */}
+            {tab==='record' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-semibold mb-3">הזנת/עריכת משחק</h2>
+                  {editingId && <span className="text-xs px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200">מצב עריכה</span>}
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="rounded-xl border p-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <label className="text-sm w-16 shrink-0">סשן</label>
+                      <select className="border rounded-lg px-2 py-1 flex-1 min-w-[160px]" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
+                        <option value="">— בחרו —</option>
+                        {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
+                      <button onClick={ensureSession} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white shrink-0">חדש</button>
+                    </div>
+                    <div className="flex items-center gap-2 mt-3 flex-wrap">
+                      <label className="text-sm w-16 shrink-0">רונד #</label>
+                      <input type="number" className="border rounded-lg px-2 py-1 w-24 text-center sm:w-28" value={round} onChange={e=>setRound(parseInt(e.target.value||'1'))} />
+                    </div>
+                    <div className="flex items-center gap-2 mt-3 flex-wrap">
+                      <label className="text-sm w-16 shrink-0">פורמט</label>
+                      <select className="border rounded-lg px-2 py-1 w-40" value={format} onChange={e=>setFormat(e.target.value)}>
+                        <option value="15">עד 15 נקודות</option>
+                        <option value="SET">סט אחד (6 גיימים)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border p-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm text-slate-600 mb-1">זוג A</div>
+                        <select className="border rounded-lg px-2 py-1 w-full min-w-0" value={A1} onChange={e=>setA1(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <select className="border rounded-lg px-2 py-1 w-full mt-2 min-w-0" value={A2} onChange={e=>setA2(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <div className="mt-2 flex items-center gap-2 justify-between flex-wrap">
+                          <label className="text-sm shrink-0">נק׳/גיימים A</label>
+                          <input type="number" className="border rounded-lg px-2 py-1 w-20 text-center sm:w-24" value={scoreA} onChange={e=>setScoreA(e.target.value)} />
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm text-slate-600 mb-1">זוג B</div>
+                        <select className="border rounded-lg px-2 py-1 w-full min-w-0" value={B1} onChange={e=>setB1(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <select className="border rounded-lg px-2 py-1 w-full mt-2 min-w-0" value={B2} onChange={e=>setB2(e.target.value)}>
+                          <option value="">—</option>
+                          {players.map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <div className="mt-2 flex items-center gap-2 justify-between flex-wrap">
+                          <label className="text-sm shrink-0">נק׳/גיימים B</label>
+                          <input type="number" className="border rounded-lg px-2 py-1 w-20 text-center sm:w-24" value={scoreB} onChange={e=>setScoreB(e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-3 flex-wrap">
+                      <button disabled={!canSave || busy} onClick={addOrUpdateMatch} className="px-3 py-1.5 rounded-xl bg-indigo-600 text-white">
+                        {busy ? 'שומר…' : (editingId? 'עדכן משחק' : 'שמור משחק')}
+                      </button>
+                      {editingId && <button className="px-3 py-1.5 rounded-xl border" onClick={clearForm}>בטל עריכה</button>}
+                    </div>
+
+                    {!allChosenUnique && <p className="text-xs text-rose-600 mt-2">יש לבחור 4 שחקנים שונים.</p>}
+                    {(scoreA===''||scoreB==='') && <p className="text-xs text-amber-600 mt-1">יש להזין נקודות/גיימים לשתי הקבוצות.</p>}
+                    {(scoreA!==''&&scoreB!==''&&Number(scoreA)==Number(scoreB)) && <p className="text-xs text-amber-600 mt-1">אין תיקו – בחרו מנצח.</p>}
+                  </div>
+                </div>
+
+                <div className="mt-6">
+                  <h3 className="font-semibold mb-2">משחקים אחרונים</h3>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-slate-50">
+                          <th className="text-right p-2">תאריך</th>
+                          <th className="text-right p-2">Session</th>
+                          <th className="text-right p-2">רונד</th>
+                          <th className="text-right p-2">פורמט</th>
+                          <th className="text-right p-2">A</th>
+                          <th className="text-right p-2">B</th>
+                          <th className="text-right p-2">תוצאה</th>
+                          <th className="text-right p-2">מנצח</th>
+                          <th className="text-right p-2">עריכה</th>
+                          <th className="text-right p-2">מחיקה</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...matches].slice(-20).reverse().map(m=>(
+                          <tr key={m.id} className="border-b hover:bg-slate-50">
+                            <td className="p-2 whitespace-nowrap">{m.date}</td>
+                            <td className="p-2">{(sessions.find(s=>s.id===m.sessionId)?.label) || m.sessionId}</td>
+                            <td className="p-2">{m.round}</td>
+                            <td className="p-2">{m.format==='15'? 'עד 15':'סט'}</td>
+                            <td className="p-2">{m.A1} & {m.A2}</td>
+                            <td className="p-2">{m.B1} & {m.B2}</td>
+                            <td className="p-2">{m.scoreA} : {m.scoreB}</td>
+                            <td className="p-2">{m.winner}</td>
+                            <td className="p-2"><button className="px-2 py-1 rounded-lg border" onClick={()=>editMatch(m)}>ערוך</button></td>
+                            <td className="p-2"><button className="px-2 py-1 rounded-lg border bg-rose-600 text-white" onClick={()=>deleteMatch(m)}>מחק</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* Stats */}
+            {tab==='stats' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-3">סטטיסטיקות לזוגות</h2>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-slate-50">
+                        <th className="text-right p-2">זוג</th>
+                        <th className="text-right p-2">משחקים</th>
+                        <th className="text-right p-2">נצחונות</th>
+                        <th className="text-right p-2">הפסדים</th>
+                        <th className="text-right p-2">% נצחון</th>
+                        <th className="text-right p-2">נק׳ בעד</th>
+                        <th className="text-right p-2">נק׳ נגד</th>
+                        <th className="text-right p-2">הפרש</th>
+                        <th className="text-right p-2">סבבים</th>
+                        <th className="text-right p-2">רצף נוכחי</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pairStats.map(ps=>(
+                        <tr key={ps.pair} className="border-b hover:bg-slate-50">
+                          <td className="p-2 whitespace-nowrap">{ps.pair}</td>
+                          <td className="p-2 text-center">{ps.games}</td>
+                          <td className="p-2 text-center">{ps.wins}</td>
+                          <td className="p-2 text-center">{ps.losses}</td>
+                          <td className="p-2 text-center">{(ps.winPct*100).toFixed(0)}%</td>
+                          <td className="p-2 text-center">{ps.ptsFor}</td>
+                          <td className="p-2 text-center">{ps.ptsAgainst}</td>
+                          <td className="p-2 text-center">{ps.diff}</td>
+                          <td className="p-2 text-center">{ps.sabs}</td>
+                          <td className="p-2 text-center">{ps.hotStreak}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
+            {/* Session winner */}
+            {tab==='session' && (
+              <section className="bg-white rounded-2xl shadow p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-semibold">זוג הסשן</h2>
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm">בחר סשן:</label>
+                    <select className="border rounded-lg px-2 py-1" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
+                      <option value="">— בחרו —</option>
+                      {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {sessionSummary.winner
+                  ? <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 mb-3">
+                      <div className="text-sm text-emerald-700">תאריך: {sessionSummary.date || '-'}</div>
+                      <div className="text-lg font-semibold text-emerald-900 mt-1">🏆 הזוג המנצח: {sessionSummary.winner.pair}</div>
+                      <div className="text-sm text-emerald-800">נצחונות: {sessionSummary.winner.wins} · משחקים: {sessionSummary.winner.games} · הפרש: {sessionSummary.winner.diff}</div>
+                    </div>
+                  : <p className="text-slate-600">אין עדיין משחקים בסשן

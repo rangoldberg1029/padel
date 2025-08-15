@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Padel Buddy – אפליקציה לקבוצת פאדל</title>
+  <title>Padel Buddy – אפליקציית פאדל</title>
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#0f172a"/>
   <link rel="apple-touch-icon" href="icon-192.png">
@@ -15,17 +15,28 @@
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
   <style>
-    .btn {{ @apply px-3 py-1.5 rounded-xl border; }}
-    .btn-primary {{ @apply bg-indigo-600 text-white border-indigo-600; }}
-    .card {{ @apply bg-white rounded-2xl shadow p-4; }}
-    .field {{ @apply border rounded-lg px-2 py-1; }}
+    .btn { @apply px-3 py-1.5 rounded-xl border transition active:scale-95; }
+    .btn-primary { @apply bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700; }
+    .btn-danger { @apply bg-rose-600 text-white border-rose-600 hover:bg-rose-700; }
+    .btn-ghost { @apply hover:bg-slate-100; }
+    .card { @apply bg-white rounded-2xl shadow p-4; }
+    .field { @apply border rounded-lg px-2 py-1; }
+    .tag { @apply text-xs px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200; }
   </style>
 </head>
-<body class="bg-slate-50">
+<body class="bg-gradient-to-b from-slate-50 to-slate-100">
   <div id="root"></div>
 
   <script>
-    if ("serviceWorker" in navigator) { window.addEventListener("load", () => { navigator.serviceWorker.register("./service-worker.js"); }); }
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", async () => {
+        try {
+          const reg = await navigator.serviceWorker.register("./service-worker.js");
+          reg.update?.();
+          navigator.serviceWorker.addEventListener("controllerchange", ()=> location.reload());
+        } catch(e) { console.log("SW register error", e); }
+      });
+    }
   </script>
 
   <script type="text/babel">
@@ -43,6 +54,7 @@
     function weekNumber(date){const d=new Date(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()));const dayNum=d.getUTCDay()||7;d.setUTCDate(d.getUTCDate()+4-dayNum);const yearStart=new Date(Date.UTC(d.getUTCFullYear(),0,1));return Math.ceil(((d-yearStart)/86400000+1)/7);}
     function pairKey(a,b){if(!a||!b)return"";return [a,b].sort((x,y)=>x.localeCompare(y,'he')).join(" & ");}
     function todayStr(){const d=new Date();return d.toISOString().slice(0,10);}
+    function niceName(u){ if(!u) return "אורח"; if(u.displayName) return u.displayName.split(" ")[0]; if(u.email) return u.email.split("@")[0]; return "חבר"; }
 
     async function setPlayers(list){
       const batch=db.batch();
@@ -80,6 +92,7 @@
       const updatePlayer = (idx, name)=>{ const arr = [...players]; arr[idx] = name; setPlayersState(arr); };
       const savePlayers = async()=>{ try { await setPlayers(players); toast("נשמר"); } catch(e){ alert("שגיאת שמירת שחקנים: "+(e.message||e)); } };
 
+      // attendance & draw
       const [attendance, setAttendance] = useState(()=> Object.fromEntries(players.map(p=>[p,true])));
       useEffect(()=>{ const next={}; players.forEach(p=> next[p]=attendance[p] ?? true); setAttendance(next); }, [players.join("|")]);
       const todaysPlayers = useMemo(()=> players.filter(p=>attendance[p]), [players, attendance]);
@@ -90,8 +103,10 @@
         else { setDraw({ A1:s[0], A2:s[1], B1:s[2], B2:s[3], bench:s[4] }); }
       };
 
+      // sessions
       const [currentSessionId, setCurrentSessionId] = useState("");
       const [sessions, setSessions] = useState([]);
+
       useEffect(()=>{
         const unsub = db.collection("sessions").orderBy("date","desc").onSnapshot(
           snap=>{ const arr = snap.docs.map(d=> ({id:d.id, ...d.data()})); setSessions(arr); if(!currentSessionId && arr.length) setCurrentSessionId(arr[0].id); },
@@ -108,12 +123,31 @@
         return ref.id;
       };
 
+      const renameSession = async (s)=>{
+        const label = prompt("שם חדש למפגש:", s.label || ("מפגש " + s.date));
+        if(!label) return;
+        await db.collection("sessions").doc(s.id).update({label});
+        toast("עודכן");
+      };
+
+      const deleteSession = async (s)=>{
+        if(!confirm("למחוק את המפגש הזה ואת כל המשחקים שבתוכו?")) return;
+        const snap = await db.collection("matches").where("sessionId","==",s.id).get();
+        const batch = db.batch();
+        snap.docs.forEach(doc=> batch.delete(doc.ref));
+        batch.delete(db.collection("sessions").doc(s.id));
+        await batch.commit();
+        toast("המפגש וכל משחקיו נמחקו ("+snap.size+")");
+        if(currentSessionId===s.id) setCurrentSessionId("");
+      };
+
       // record match
       const [round, setRound] = useState(1);
       const [format, setFormat] = useState('15');
       const [A1, setA1] = useState(''); const [A2, setA2] = useState('');
       const [B1, setB1] = useState(''); const [B2, setB2] = useState('');
       const [scoreA, setScoreA] = useState(''); const [scoreB, setScoreB] = useState('');
+      const [editingId, setEditingId] = useState("");
 
       useEffect(()=>{ if(draw.A1) setA1(draw.A1); if(draw.A2) setA2(draw.A2); if(draw.B1) setB1(draw.B1); if(draw.B2) setB2(draw.B2); }, [draw.A1, draw.A2, draw.B1, draw.B2]);
 
@@ -126,6 +160,7 @@
 
       const canSave = allChosenUnique && scoreA!=='' && scoreB!=='' && Number(scoreA)!=Number(scoreB);
 
+      // matches
       const [matches, setMatches] = useState([]);
       useEffect(()=>{
         const unsub = db.collection("matches").orderBy("date").onSnapshot(
@@ -143,10 +178,12 @@
         if(!currentSessionId) return;
         const list = matches.filter(m=>m.sessionId===currentSessionId);
         const last = list.length ? Math.max(...list.map(m=>Number(m.round||0))) : 0;
-        setRound(last+1);
-      }, [currentSessionId, matches.length]);
+        if(!editingId) setRound(last+1);
+      }, [currentSessionId, matches.length, editingId]);
 
-      const addMatch = async ()=>{
+      const clearForm = ()=>{ setA1('');setA2('');setB1('');setB2('');setScoreA('');setScoreB('');setFormat('15');setEditingId(''); };
+
+      const addOrUpdateMatch = async ()=>{
         try{
           setBusy(true);
           const sid = await ensureSession();
@@ -155,17 +192,40 @@
           if(Number.isNaN(nA)||Number.isNaN(nB)){ alert("נא להזין נקודות/גיימים מספריים"); setBusy(false); return; }
           if(nA===nB){ alert("צריך מנצח ברור (אין תיקו)"); setBusy(false); return; }
           const winner = nA>nB? 'A':'B';
-          const date = todayStr();
-          await db.collection("matches").add({
-            date, week: weekNumber(new Date(date)), sessionId: sid,
-            round: Number(round)||1, format, A1, A2, B1, B2,
-            scoreA: nA, scoreB: nB, winner
-          });
-          toast("המשחק נשמר ✔");
-          setRound(r=>Number(r||0)+1); setScoreA(''); setScoreB('');
-        }catch(e){
-          alert("שגיאה בשמירת משחק: " + (e.message||e)); setErr(e.message||String(e));
-        }finally{ setBusy(false); }
+          if(editingId){
+            await db.collection("matches").doc(editingId).update({
+              sessionId: sid, round: Number(round)||1, format, A1, A2, B1, B2, scoreA: nA, scoreB: nB, winner
+            });
+            toast("המשחק עודכן ✔");
+          } else {
+            const date = todayStr();
+            await db.collection("matches").add({
+              date, week: weekNumber(new Date(date)), sessionId: sid,
+              round: Number(round)||1, format, A1, A2, B1, B2, scoreA: nA, scoreB: nB, winner
+            });
+            toast("המשחק נשמר ✔");
+            setRound(r=>Number(r||0)+1);
+          }
+          clearForm();
+        }catch(e){ alert("שגיאה בשמירה: " + (e.message||e)); setErr(e.message||String(e)); }
+        finally{ setBusy(false); }
+      };
+
+      const editMatch = (m)=>{
+        setCurrentSessionId(m.sessionId||"");
+        setRound(m.round||1);
+        setFormat(m.format||'15');
+        setA1(m.A1||''); setA2(m.A2||'');
+        setB1(m.B1||''); setB2(m.B2||'');
+        setScoreA(m.scoreA!=null? String(m.scoreA):''); setScoreB(m.scoreB!=null? String(m.scoreB):'');
+        setEditingId(m.id);
+        setTab('record');
+      };
+
+      const deleteMatch = async (m)=>{
+        if(!confirm("למחוק את המשחק הזה?")) return;
+        await db.collection("matches").doc(m.id).delete();
+        toast("המשחק נמחק");
       };
 
       // stats
@@ -234,14 +294,9 @@
         } catch(e) { console.error(e); alert("שגיאה ביצוא CSV: " + (e.message||e)); }
       };
 
-      // Diagnostics
       const checkIndex = async()=>{
-        try{
-          await db.collection('matches').orderBy('date').orderBy('round').limit(1).get();
-          alert('✅ האינדקס (date+round) קיים ופועל');
-        }catch(e){
-          alert('⚠️ חסר אינדקס ל-date+round או בעיית הרשאה:\n' + (e.message||e));
-        }
+        try{ await db.collection('matches').orderBy('date').orderBy('round').limit(1).get(); alert('✅ האינדקס (date+round) קיים ופועל'); }
+        catch(e){ alert('⚠️ חסר אינדקס ל-date+round או בעיית הרשאה:\n' + (e.message||e)); }
       };
 
       const testWrite = async()=>{
@@ -250,17 +305,21 @@
       };
 
       return (
-        <div dir="rtl" className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-900 p-4">
-          <div className="max-w-5xl mx-auto">
-            <header className="mb-3 flex items-center justify-between">
-              <div>
-                <h1 className="text-2xl font-bold">Padel Buddy</h1>
-                <div className="text-xs text-slate-500">Project: {firebaseConfig.projectId} · v8</div>
+        <div dir="rtl" className="min-h-screen text-slate-900 p-4">
+          <div className="max-w-6xl mx-auto">
+            <header className="mb-4 p-4 rounded-2xl bg-gradient-to-l from-indigo-600 to-teal-500 text-white shadow flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <img src="icon-192.png" className="w-8 h-8 rounded-xl" alt="" />
+                <div>
+                  <h1 className="text-xl font-bold">Padel Buddy</h1>
+                  <div className="text-[11px] opacity-90">Project: {firebaseConfig.projectId} · v12</div>
+                </div>
               </div>
               <div className="flex items-center gap-2">
+                <span className="text-sm">שלום {niceName(user)}</span>
                 {user
-                  ? <button onClick={signOut} className="btn">התנתק ({user?.email})</button>
-                  : <button onClick={signIn} className="btn">כניסה עם Google</button>}
+                  ? <button onClick={signOut} className="btn btn-ghost bg-white/10 text-white">התנתק</button>
+                  : <button onClick={signIn} className="btn btn-ghost bg-white/10 text-white">כניסה עם Google</button>}
               </div>
             </header>
 
@@ -268,13 +327,13 @@
               ⚠️ שגיאת חיבור/הרשאות: {err}
             </div>}
 
-            <nav className="mb-4 flex gap-2">
+            <nav className="mb-4 flex flex-wrap gap-2">
               {[
                 {k:'draw',t:'הגרלה'},
                 {k:'record',t:'הזנת משחק'},
                 {k:'stats',t:'סטטיסטיקות'},
                 {k:'week',t:'זוג השבוע'},
-                {k:'admin',t:'שיתופי/גיבוי'},
+                {k:'admin',t:'ניהול וגיבוי'},
               ].map(({k,t}) => (
                 <button key={k} onClick={()=>setTab(k)} className={"btn " + (tab===k?'bg-white shadow':'bg-slate-100 hover:bg-white')}>{t}</button>
               ))}
@@ -342,7 +401,10 @@
 
             {tab==='record' && (
               <section className="card">
-                <h2 className="font-semibold mb-3">הזנת משחק</h2>
+                <div className="flex items-center justify-between">
+                  <h2 className="font-semibold mb-3">הזנת/עריכת משחק</h2>
+                  {editingId && <span className="tag">מצב עריכה</span>}
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="rounded-xl border p-3">
                     <label className="text-sm">סשן</label>
@@ -399,9 +461,10 @@
                         </div>
                       </div>
                     </div>
-                    <button disabled={!canSave || busy} onClick={addMatch} className={"mt-3 btn btn-primary " + (!canSave||busy?'opacity-60 cursor-not-allowed':'')}>
-                      {busy ? 'שומר…' : 'שמור משחק'}
-                    </button>
+                    <div className="flex items-center gap-2 mt-3">
+                      <button disabled={!canSave || busy} onClick={addOrUpdateMatch} className={"btn btn-primary " + (!canSave||busy?'opacity-60 cursor-not-allowed':'')}>{busy ? 'שומר…' : (editingId? 'עדכן משחק' : 'שמור משחק')}</button>
+                      {editingId && <button className="btn" onClick={()=>clearForm()}>בטל עריכה</button>}
+                    </div>
                     {!allChosenUnique && <p className="text-xs text-rose-600 mt-2">יש לבחור 4 שחקנים שונים.</p>}
                     {(scoreA===''||scoreB==='') && <p className="text-xs text-amber-600 mt-1">יש להזין נקודות/גיימים לשתי הקבוצות.</p>}
                     {(scoreA!==''&&scoreB!==''&&Number(scoreA)==Number(scoreB)) && <p className="text-xs text-amber-600 mt-1">אין תיקו – בחרו מנצח.</p>}
@@ -422,10 +485,11 @@
                           <th className="text-right p-2">B</th>
                           <th className="text-right p-2">תוצאה</th>
                           <th className="text-right p-2">מנצח</th>
+                          <th className="text-right p-2">פעולות</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {[...matches].slice(-10).reverse().map(m=>(
+                        {[...matches].slice(-12).reverse().map(m=>(
                           <tr key={m.id} className="border-b">
                             <td className="p-2 whitespace-nowrap">{m.date}</td>
                             <td className="p-2">{(sessions.find(s=>s.id===m.sessionId)?.label) || m.sessionId}</td>
@@ -435,6 +499,10 @@
                             <td className="p-2">{m.B1} & {m.B2}</td>
                             <td className="p-2">{m.scoreA} : {m.scoreB}</td>
                             <td className="p-2">{m.winner}</td>
+                            <td className="p-2 whitespace-nowrap">
+                              <button className="btn btn-ghost" onClick={()=>editMatch(m)}>ערוך</button>
+                              <button className="btn btn-danger ml-1" onClick={()=>deleteMatch(m)}>מחק</button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -465,7 +533,7 @@
                     </thead>
                     <tbody>
                       {pairStats.map(ps=>(
-                        <tr key={ps.pair} className="border-b">
+                        <tr key={ps.pair} className="border-b hover:bg-slate-50">
                           <td className="p-2 whitespace-nowrap">{ps.pair}</td>
                           <td className="p-2 text-center">{ps.games}</td>
                           <td className="p-2 text-center">{ps.wins}</td>
@@ -522,21 +590,63 @@
 
             {tab==='admin' && (
               <section className="card">
-                <h2 className="font-semibold mb-2">שיתופי/גיבוי</h2>
-                <ol className="list-decimal pr-5 text-sm leading-7 text-slate-700">
-                  <li>הזן/י את שמות השחקנים ולחץ/י <b>שמור שמות לשיתוף</b>.</li>
-                  <li>פתח/י <b>Session</b> בכל מפגש (או תן לאפליקציה ליצור אוטומטית בהזנת משחק).</li>
-                  <li>כדי לשתף: פרסמו את הקבצים ב-Netlify/Vercel/GitHub Pages, ושלחו את הקישור לחברים. </li>
-                </ol>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button onClick={exportCsv} className="btn">ייצוא CSV של משחקים</button>
-                  <button onClick={testWrite} className="btn">בדיקת חיבור</button>
-                  <button onClick={checkIndex} className="btn">בדיקת אינדקס date+round</button>
+                <h2 className="font-semibold mb-2">ניהול וגיבוי</h2>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="rounded-xl border p-3">
+                    <h3 className="font-medium mb-2">סשנים</h3>
+                    <div className="flex items-center gap-2 mb-2">
+                      <select className="field" value={currentSessionId} onChange={e=>setCurrentSessionId(e.target.value)}>
+                        <option value="">— בחרו —</option>
+                        {sessions.map(s=> <option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
+                      <button onClick={async()=>{await ensureSession(); toast('Session מוכן ✅');}} className="btn btn-primary">Session חדש</button>
+                    </div>
+                    <div className="max-h-64 overflow-auto border rounded-xl">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b bg-slate-50">
+                            <th className="text-right p-2">שם</th>
+                            <th className="text-right p-2">תאריך</th>
+                            <th className="text-right p-2">משחקים</th>
+                            <th className="text-right p-2">פעולות</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sessions.map(s=>{
+                            const count = matches.filter(m=>m.sessionId===s.id).length;
+                            return (
+                              <tr key={s.id} className="border-b">
+                                <td className="p-2">{s.label}</td>
+                                <td className="p-2 whitespace-nowrap">{s.date}</td>
+                                <td className="p-2 text-center">{count}</td>
+                                <td className="p-2 whitespace-nowrap">
+                                  <button className="btn btn-ghost" onClick={()=>renameSession(s)}>שנה שם</button>
+                                  <button className="btn btn-danger ml-1" onClick={()=>deleteSession(s)}>מחק</button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border p-3">
+                    <h3 className="font-medium mb-2">כלים</h3>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={exportCsv} className="btn">ייצוא CSV של משחקים</button>
+                      <button onClick={testWrite} className="btn">בדיקת חיבור</button>
+                      <button onClick={checkIndex} className="btn">בדיקת אינדקס date+round</button>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-3">
+                      מחיקת סשן מוחקת גם את כל המשחקים שלו. מחיקת משחק מתבצעת מרשימת המשחקים בלשונית "הזנת משחק".
+                    </p>
+                  </div>
                 </div>
               </section>
             )}
 
-            <footer className="py-6 text-center text-xs text-slate-500">Made with ♥ · Firestore · v8</footer>
+            <footer className="py-6 text-center text-xs text-slate-500">Made with ♥ · Firestore · v12</footer>
           </div>
         </div>
       );

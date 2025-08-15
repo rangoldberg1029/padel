@@ -138,7 +138,16 @@
       // matches realtime
       const [matches, setMatches] = useState([]);
       useEffect(()=>{
-        const unsub = db.collection("matches").orderBy("date").orderBy("round").onSnapshot(
+        const unsub = db.collection("matches").orderBy("date").onSnapshot(
+  snap => {
+    const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // מיון משני בצד הלקוח
+    arr.sort((a,b) => a.round - b.round);
+    setMatches(arr);
+  },
+  e => { /* השאר כמו שהוא */ }
+);
+
           snap=>{ const arr = snap.docs.map(d=> ({id:d.id, ...d.data()})); setMatches(arr); },
           e=>{ console.error("matches onSnapshot error", e);
             setErr(e.message||String(e));

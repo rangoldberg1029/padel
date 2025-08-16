@@ -80,7 +80,19 @@
 
     async function setPlayersToFirestore(list){
       const batch = db.batch();
-      const coll = db.collection("players");
+      const coll = db.collection("players")
+        .orderBy("idx")
+  .limit(5)                       // ← מוסיף הגבלה ל-5
+  .onSnapshot(snap => {
+    if (!snap.empty) {
+      const arr = snap.docs.map(d => d.data().name);
+      setPlayers(arr);
+      setPlayersLoaded(true);
+    } else {
+      setPlayersToFirestore(["שחקן 1","שחקן 2","שחקן 3","שחקן 4","שחקן 5"])
+        .then(()=> setPlayersLoaded(true));
+    }
+  });
       const existing = await coll.get();
       existing.forEach(doc => batch.delete(doc.ref));
       list.forEach((name, idx)=> batch.set(coll.doc(), { name, idx }));

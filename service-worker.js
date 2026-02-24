@@ -1,5 +1,5 @@
 // Minimal PWA service worker – update CACHE_NAME to bust cache
-const CACHE_NAME = 'padel-buddy-v18';
+const CACHE_NAME = 'padel-buddy-v20';
 const ASSETS = [
   './',
   './index.html',
